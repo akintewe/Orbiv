@@ -1536,6 +1536,37 @@ tr.is-expanded .td-chevron {
 
 .settings-save-btn:active { transform: scale(0.96); }
 
+/* ── Settings: section divider ───────────────────────────────────────────── */
+.settings-section-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: #475569;
+  padding: 10px 0 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  margin-top: 4px;
+}
+
+/* ── Settings: text / tel / time inputs ─────────────────────────────────── */
+.settings-input {
+  background: rgba(15, 20, 40, 0.70);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  color: #e2e8f0;
+  font-size: 12px;
+  padding: 6px 10px;
+  width: 172px;
+  outline: none;
+  -webkit-app-region: no-drag;
+  font-family: inherit;
+}
+.settings-input:focus {
+  border-color: rgba(103, 232, 249, 0.45);
+  background: rgba(15, 20, 40, 0.90);
+}
+.settings-input::placeholder { color: #334155; }
+
 /* ── Gear icon button ──────────────────────────────────────────────────────── */
 #btn-settings {
   width: 28px;

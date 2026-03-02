@@ -199,6 +199,23 @@ contextBridge.exposeInMainWorld('focusBubble', {
     };
   },
 
+  /** Place an outbound Twilio call to read pending tasks aloud. */
+  twilioCall(cfg: { sid: string; token: string; fromPhone: string; toPhone: string; tasks: unknown[] }): Promise<{ ok: boolean; callSid?: string; error?: string }> {
+    return ipcRenderer.invoke('vc:twilio-call', cfg);
+  },
+
+  /** Persist Twilio config to main process (for auto-call scheduler). */
+  saveTwilioSettings(cfg: { sid: string; token: string; fromPhone: string; autoCallTime: string }): Promise<void> {
+    return ipcRenderer.invoke('settings:save-twilio', cfg);
+  },
+
+  /** Register callback for auto-call trigger pushed from main scheduler. */
+  onAutoCallTrigger(callback: () => void): () => void {
+    const h = (_e: Electron.IpcRendererEvent) => callback();
+    ipcRenderer.on('planner:auto-call-trigger', h);
+    return () => ipcRenderer.removeListener('planner:auto-call-trigger', h);
+  },
+
   // ── Main → Renderer ────────────────────────────────────────────────────────
 
   /**
@@ -250,6 +267,9 @@ export interface FocusBubbleAPI {
   updateTask(id: string, patch: Record<string, unknown>): Promise<void>;
   getDueTasks(): Promise<unknown[]>;
   onPlannerEvent(callback: (e: { type: string }) => void): () => void;
+  twilioCall(cfg: { sid: string; token: string; fromPhone: string; toPhone: string; tasks: unknown[] }): Promise<{ ok: boolean; callSid?: string; error?: string }>;
+  saveTwilioSettings(cfg: { sid: string; token: string; fromPhone: string; autoCallTime: string }): Promise<void>;
+  onAutoCallTrigger(callback: () => void): () => void;
 }
 
 export interface FBNotification {

@@ -79,6 +79,9 @@ declare global {
       updateTask(id: string, patch: Partial<DailyTask>): Promise<void>;
       getDueTasks(): Promise<DailyTask[]>;
       onPlannerEvent(cb: (e: { type: string }) => void): () => void;
+      twilioCall(cfg: { sid: string; token: string; fromPhone: string; toPhone: string; tasks: DailyTask[] }): Promise<{ ok: boolean; callSid?: string; error?: string }>;
+      saveTwilioSettings(cfg: { sid: string; token: string; fromPhone: string; autoCallTime: string }): Promise<void>;
+      onAutoCallTrigger(callback: () => void): () => void;
     };
   }
 }
@@ -240,6 +243,11 @@ const settingsSave     = document.getElementById('settings-save')        as HTML
 const settingTimeoutEl = document.getElementById('setting-idle-timeout') as HTMLSelectElement;
 const settingPositionEl= document.getElementById('setting-idle-position')as HTMLSelectElement;
 const settingShapeEl   = document.getElementById('setting-idle-shape')   as HTMLSelectElement;
+const settingUserPhoneEl   = document.getElementById('setting-user-phone')   as HTMLInputElement;
+const settingTwilioSidEl   = document.getElementById('setting-twilio-sid')   as HTMLInputElement;
+const settingTwilioTokenEl = document.getElementById('setting-twilio-token') as HTMLInputElement;
+const settingTwilioPhoneEl = document.getElementById('setting-twilio-phone') as HTMLInputElement;
+const settingAutoCallEl    = document.getElementById('setting-auto-call')    as HTMLInputElement;
 
 // ── Meeting notetaker DOM refs ────────────────────────────────────────────────
 const meetingView          = document.getElementById('meeting-view')               as HTMLElement;
@@ -274,6 +282,11 @@ interface FBSettings {
   idleTimeoutSeconds: number;
   idlePosition: 'top-center' | 'top-right' | 'bottom-right' | 'remember-last';
   idleShape: 'pill' | 'circle' | 'hidden';
+  userPhone: string;
+  twilioSid: string;
+  twilioToken: string;
+  twilioPhone: string;
+  autoCallTime: string;
 }
 
 const SETTINGS_KEY = 'focusbubble-settings-v1';
@@ -281,6 +294,7 @@ const DEFAULT_SETTINGS: FBSettings = {
   idleTimeoutSeconds: 60,
   idlePosition: 'top-center',
   idleShape: 'pill',
+  userPhone: '', twilioSid: '', twilioToken: '', twilioPhone: '', autoCallTime: '',
 };
 
 function loadSettings(): FBSettings {
@@ -291,6 +305,11 @@ function loadSettings(): FBSettings {
       idleTimeoutSeconds: parsed.idleTimeoutSeconds ?? DEFAULT_SETTINGS.idleTimeoutSeconds,
       idlePosition:       parsed.idlePosition       ?? DEFAULT_SETTINGS.idlePosition,
       idleShape:          parsed.idleShape           ?? DEFAULT_SETTINGS.idleShape,
+      userPhone:    (parsed as Partial<FBSettings>).userPhone    ?? '',
+      twilioSid:    (parsed as Partial<FBSettings>).twilioSid    ?? '',
+      twilioToken:  (parsed as Partial<FBSettings>).twilioToken  ?? '',
+      twilioPhone:  (parsed as Partial<FBSettings>).twilioPhone  ?? '',
+      autoCallTime: (parsed as Partial<FBSettings>).autoCallTime ?? '',
     };
   } catch { return { ...DEFAULT_SETTINGS }; }
 }
@@ -1705,10 +1724,14 @@ async function vcProcessTranscript(transcript: string): Promise<void> {
     vcSpeak(msg).then(() => { if (fsOpen && !vcListenView.hasAttribute('hidden')) vcStartListening(); });
 
   } else if (action === 'help') {
-    const msg = "I can search files, open or close apps, take screenshots, play Spotify, record meetings, manage your daily tasks, and more. Just speak naturally!";
+    const msg = "I can search files, open or close apps, take screenshots, play Spotify, record meetings, manage your daily tasks, call you for task check-ins, and more. Just speak naturally!";
     fsTitleText.textContent = 'What I can do';
     vcLabel.textContent = msg;
     vcSpeak(msg).then(() => { if (fsOpen && !vcListenView.hasAttribute('hidden')) vcStartListening(); });
+
+  } else if (action === 'call_reminder') {
+    fsTitleText.textContent = 'Phone Reminder';
+    await vcDoTwilioCall();
 
   } else {
     // unknown — speak then retry once audio is done
@@ -1716,6 +1739,37 @@ async function vcProcessTranscript(transcript: string): Promise<void> {
     vcSpeak("Hmm, I'm not sure what you meant. Could you say that again?").then(() => {
       if (fsOpen && !vcListenView.hasAttribute('hidden')) vcStartListening();
     });
+  }
+}
+
+// ── Twilio phone reminder call ────────────────────────────────────────────────
+async function vcDoTwilioCall(): Promise<void> {
+  const { userPhone, twilioSid, twilioToken, twilioPhone } = settings;
+  if (!userPhone || !twilioSid || !twilioToken || !twilioPhone) {
+    vcLabel.textContent = 'Setup required — open Settings';
+    await vcSpeak('Please set up your phone number and Twilio credentials in Settings first.');
+    return;
+  }
+  const pending = plannerTasks.filter(t => !t.completed);
+  if (pending.length === 0) {
+    await vcSpeak('You have no pending tasks — great job!');
+    return;
+  }
+  vcLabel.textContent = `Calling ${userPhone}…`;
+  await vcSpeak(`Calling you now to review your ${pending.length} pending ${pending.length === 1 ? 'task' : 'tasks'}.`);
+  try {
+    const result = await window.focusBubble.twilioCall({
+      sid: twilioSid, token: twilioToken, fromPhone: twilioPhone, toPhone: userPhone, tasks: pending,
+    });
+    if (result.ok) {
+      vcLabel.textContent = 'Call placed! Check your phone.';
+      await vcSpeak('Call placed — check your phone!');
+    } else {
+      vcLabel.textContent = 'Call failed';
+      await vcSpeak(`The call failed. ${result.error ?? 'Please check your Twilio credentials in Settings.'}`);
+    }
+  } catch {
+    await vcSpeak('Something went wrong placing the call.');
   }
 }
 
@@ -2121,6 +2175,11 @@ function syncSettingsToUI(): void {
   settingTimeoutEl.value  = String(settings.idleTimeoutSeconds);
   settingPositionEl.value = settings.idlePosition;
   settingShapeEl.value    = settings.idleShape;
+  settingUserPhoneEl.value   = settings.userPhone;
+  settingTwilioSidEl.value   = settings.twilioSid;
+  settingTwilioTokenEl.value = settings.twilioToken;
+  settingTwilioPhoneEl.value = settings.twilioPhone;
+  settingAutoCallEl.value    = settings.autoCallTime;
 }
 
 function openSettings(): void {
@@ -3037,8 +3096,17 @@ settingsSave.addEventListener('click', () => {
     idleTimeoutSeconds: Number(settingTimeoutEl.value),
     idlePosition: settingPositionEl.value as FBSettings['idlePosition'],
     idleShape:    settingShapeEl.value    as FBSettings['idleShape'],
+    userPhone:    settingUserPhoneEl.value.trim(),
+    twilioSid:    settingTwilioSidEl.value.trim(),
+    twilioToken:  settingTwilioTokenEl.value.trim(),
+    twilioPhone:  settingTwilioPhoneEl.value.trim(),
+    autoCallTime: settingAutoCallEl.value.trim(),
   };
   saveSettings(settings);
+  window.focusBubble.saveTwilioSettings({
+    sid: settings.twilioSid, token: settings.twilioToken,
+    fromPhone: settings.twilioPhone, autoCallTime: settings.autoCallTime,
+  });
   if (!isIdle) resetIdleTimer();
   closeSettings();
 });
@@ -3087,6 +3155,14 @@ reminderSnoozeBtn.addEventListener('click', () => handleReminderResponse('snooze
 window.focusBubble.onPlannerEvent(({ type }) => {
   if (type === 'morning-greeting') startMorningFlow();
   if (type === 'check-reminders')  checkAndShowReminder();
+});
+
+// ── Auto-call trigger from main-process scheduler ─────────────────────────────
+window.focusBubble.onAutoCallTrigger(() => {
+  if (!plannerCollecting && !plannerAwaitingYN && !plannerFlowActive) {
+    if (!fsOpen) openFileSearch();
+    vcDoTwilioCall();
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

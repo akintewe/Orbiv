@@ -98,16 +98,37 @@ interface DailyTask {
 
 let dailyTasks: DailyTask[] = [];
 let dailyGreeted = false;
+let autoCalledToday = false;
 let dailyDate = new Date().toDateString(); // tracks which calendar day the data belongs to
 
 function resetDailyPlanIfNewDay(): void {
   const today = new Date().toDateString();
   if (today !== dailyDate) {
-    dailyTasks   = [];
-    dailyGreeted = false;
-    dailyDate    = today;
+    dailyTasks      = [];
+    dailyGreeted    = false;
+    autoCalledToday = false;
+    dailyDate       = today;
     console.log('FocusBubble: midnight reset — daily plan cleared');
   }
+}
+
+// ─── Daily task disk persistence ─────────────────────────────────────────────
+function getTasksFile(): string {
+  return path.join(app.getPath('userData'), 'daily-tasks.json');
+}
+function loadDailyTasksFromDisk(): void {
+  try {
+    const raw = JSON.parse(fs.readFileSync(getTasksFile(), 'utf8')) as { date: string; tasks: DailyTask[] };
+    if (raw.date === new Date().toDateString() && Array.isArray(raw.tasks)) {
+      dailyTasks = raw.tasks;
+      console.log(`FocusBubble: loaded ${raw.tasks.length} task(s) from disk`);
+    }
+  } catch { /* no file or stale date */ }
+}
+function saveTasksToDisk(): void {
+  try {
+    fs.writeFileSync(getTasksFile(), JSON.stringify({ date: new Date().toDateString(), tasks: dailyTasks }));
+  } catch { /* non-critical */ }
 }
 
 function startDailyPlannerCheck(): void {
@@ -123,6 +144,16 @@ function startDailyPlannerCheck(): void {
     }
     if (hour >= 6 && hour < 22) {
       mainWindow.webContents.send('planner:check-reminders');
+    }
+    // ── Auto-call scheduler ──────────────────────────────────────────────────
+    if (twilioConfig?.autoCallTime && !autoCalledToday) {
+      const [hStr, mStr] = twilioConfig.autoCallTime.split(':');
+      const callMins = parseInt(hStr, 10) * 60 + parseInt(mStr, 10);
+      const nowMins  = new Date().getHours() * 60 + new Date().getMinutes();
+      if (Math.abs(nowMins - callMins) <= 1) {
+        autoCalledToday = true;
+        mainWindow.webContents.send('planner:auto-call-trigger');
+      }
     }
   }
   setTimeout(check, 3000);
@@ -419,6 +450,7 @@ app.on('ready', async () => {
       console.info('FocusBubble: mic permission request result:', granted);
     }
   }
+  loadDailyTasksFromDisk();
   createWindow();
   startAiriaPolling();
   startDailyPlannerCheck();
@@ -690,6 +722,7 @@ ipcMain.handle('planner:load', (): { tasks: DailyTask[]; greeted: boolean } => (
 
 ipcMain.handle('planner:save-tasks', (_e, tasks: DailyTask[]): void => {
   dailyTasks = tasks;
+  saveTasksToDisk();
 });
 
 ipcMain.handle('planner:set-greeted', (): void => {
@@ -698,7 +731,7 @@ ipcMain.handle('planner:set-greeted', (): void => {
 
 ipcMain.handle('planner:update-task', (_e, id: string, patch: Partial<DailyTask>): void => {
   const task = dailyTasks.find(t => t.id === id);
-  if (task) Object.assign(task, patch);
+  if (task) { Object.assign(task, patch); saveTasksToDisk(); }
 });
 
 ipcMain.handle('planner:due-tasks', (): DailyTask[] => {
@@ -711,6 +744,43 @@ ipcMain.handle('planner:due-tasks', (): DailyTask[] => {
       ? mins >= t.dueMinutes && (!t.remindedAt || now - t.remindedAt > 30 * 60_000)
       : !t.remindedAt || now - t.remindedAt > 120 * 60_000)
   );
+});
+
+// ─── Twilio config (in-memory for scheduler) ─────────────────────────────────
+interface TwilioConfig { sid: string; token: string; fromPhone: string; autoCallTime: string; }
+let twilioConfig: TwilioConfig | null = null;
+
+ipcMain.handle('settings:save-twilio', (_e, cfg: TwilioConfig): void => {
+  twilioConfig = cfg;
+});
+
+// ─── IPC: Twilio outbound call ────────────────────────────────────────────────
+ipcMain.handle('vc:twilio-call', async (_e, { sid, token, fromPhone, toPhone, tasks }: {
+  sid: string; token: string; fromPhone: string; toPhone: string; tasks: DailyTask[];
+}): Promise<{ ok: boolean; callSid?: string; error?: string }> => {
+  try {
+    const pending = tasks.filter(t => !t.completed);
+    const count = pending.length;
+    const taskLines = pending.map((t, i) =>
+      `Task ${i + 1}: ${t.title}${t.dueTime ? `, due at ${t.dueTime}` : ''}.`
+    ).join(' ');
+    const bodyText = count === 0
+      ? `Hi! This is Orbiv, your focus assistant. You have no pending tasks — great work today!`
+      : `Hi! This is Orbiv, your focus assistant. You have ${count} pending ${count === 1 ? 'task' : 'tasks'} today. ${taskLines} Check back with Orbiv when done. Have a productive day!`;
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna">${bodyText}</Say></Response>`;
+    const resp = await axios.post(
+      `https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls.json`,
+      new URLSearchParams({ To: toPhone, From: fromPhone, Twiml: twiml }),
+      { auth: { username: sid, password: token }, headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15_000 }
+    );
+    const callSid = (resp.data as { sid?: string }).sid ?? 'unknown';
+    console.log(`FocusBubble: Twilio call placed — SID ${callSid}`);
+    return { ok: true, callSid };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('FocusBubble: Twilio call failed —', msg);
+    return { ok: false, error: msg };
+  }
 });
 
 // ─── IPC: Spotify playback via AppleScript ────────────────────────────────────
@@ -1074,6 +1144,7 @@ Rules:
 - If the user wants to open/launch an app → open_app
 - If the user wants to close/quit an app → close_app
 - If the user wants to play music on Spotify → play_song
+- If the user wants to be called or phoned about their tasks → call_reminder
 - If the transcript looks like STT noise (e.g. "(music playing)", "(applause)", sound descriptions in parentheses) → unknown
 
 Possible intents:
@@ -1090,6 +1161,7 @@ Possible intents:
   { "intent": "greeting" }
   { "intent": "joke" }
   { "intent": "help" }
+  { "intent": "call_reminder" }
   { "intent": "unknown",            "query": "<original transcript>" }
 
 Transcript: "${transcript}"`,
@@ -1157,6 +1229,10 @@ function classifyLocally(t: string): Record<string, unknown> {
 
   // STT noise — sound descriptions in parentheses, e.g. "(music playing)"
   if (/^\(.*\)$/.test(s)) return { intent: 'unknown', query: t };
+
+  // ── Phone task reminder call ──────────────────────────────────────────────
+  if (/\b(call\s*me|phone\s*me|remind\s*me\s*by\s*phone|task\s*(check\s*)?call|phone\s*reminder)\b/.test(s))
+    return { intent: 'call_reminder' };
 
   // ── Meeting notetaker — check before screenshot so "record meeting" doesn't match screenshot ──
   if (/\b(start|begin|record|take|kick\s*off)\b.{0,20}\b(meeting|notes?|notetaker|transcript|recording)\b|\b(meeting|notes?)\b.{0,10}\b(start|begin|go|on)\b/i.test(s))
