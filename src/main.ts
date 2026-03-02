@@ -101,13 +101,22 @@ let dailyGreeted = false;
 let autoCalledToday = false;
 let dailyDate = new Date().toDateString(); // tracks which calendar day the data belongs to
 
+// ─── One-off ad-hoc call reminders ───────────────────────────────────────────
+interface AdHocReminder { id: string; task: string; fireAtMs: number; fired: boolean; toPhone: string; }
+let adHocReminders: AdHocReminder[] = [];
+
+// ─── Periodic task check-in calls ────────────────────────────────────────────
+// Tracks which hours we've already called on today (e.g. [9, 11, 13, 15])
+let periodicCallHoursFired: number[] = [];
+
 function resetDailyPlanIfNewDay(): void {
   const today = new Date().toDateString();
   if (today !== dailyDate) {
-    dailyTasks      = [];
-    dailyGreeted    = false;
-    autoCalledToday = false;
-    dailyDate       = today;
+    dailyTasks               = [];
+    dailyGreeted             = false;
+    autoCalledToday          = false;
+    periodicCallHoursFired   = [];
+    dailyDate                = today;
     console.log('FocusBubble: midnight reset — daily plan cleared');
   }
 }
@@ -129,6 +138,58 @@ function saveTasksToDisk(): void {
   try {
     fs.writeFileSync(getTasksFile(), JSON.stringify({ date: new Date().toDateString(), tasks: dailyTasks }));
   } catch { /* non-critical */ }
+}
+
+// ─── Place a Twilio call directly from main process ───────────────────────────
+async function placeTwilioCall(twiml: string): Promise<void> {
+  if (!twilioConfig) { console.warn('FocusBubble: placeTwilioCall — no twilioConfig'); return; }
+  const { sid, token, fromPhone } = twilioConfig;
+  // toPhone lives in twilioConfig via saveTwilioSettings; we store it there when renderer saves settings
+  const toPhone = (twilioConfig as TwilioConfig & { toPhone?: string }).toPhone;
+  if (!toPhone) { console.warn('FocusBubble: placeTwilioCall — no toPhone'); return; }
+  try {
+    const resp = await axios.post(
+      `https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls.json`,
+      new URLSearchParams({ To: toPhone, From: fromPhone, Twiml: twiml }),
+      { auth: { username: sid, password: token }, headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15_000 }
+    );
+    console.log(`FocusBubble: call placed — SID ${(resp.data as { sid?: string }).sid}`);
+  } catch (err) {
+    console.error('FocusBubble: Twilio call failed —', err instanceof Error ? err.message : err);
+  }
+}
+
+// ─── Twilio Sync polling — marks tasks done when user presses 1 on phone ─────
+function startSyncPolling(): void {
+  setInterval(async () => {
+    if (!twilioConfig?.syncSid || !twilioConfig.sid || !twilioConfig.token) return;
+    const { sid, token, syncSid } = twilioConfig;
+    const pending = dailyTasks.filter(t => !t.completed);
+    if (pending.length === 0) return;
+    for (const task of pending) {
+      try {
+        const resp = await axios.get(
+          `https://sync.twilio.com/v1/Services/${syncSid}/Documents/done-${task.id}`,
+          { auth: { username: sid, password: token }, timeout: 8_000 }
+        );
+        const done = (resp.data as { data?: { done?: boolean } }).data?.done;
+        if (done) {
+          task.completed = true;
+          saveTasksToDisk();
+          console.log(`FocusBubble: Sync — task marked done via phone: "${task.title}"`);
+          // Notify renderer so UI updates
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('planner:task-done-via-phone', { id: task.id });
+          }
+          // Clean up the Sync document
+          await axios.delete(
+            `https://sync.twilio.com/v1/Services/${syncSid}/Documents/done-${task.id}`,
+            { auth: { username: sid, password: token }, timeout: 8_000 }
+          ).catch(() => {});
+        }
+      } catch { /* document doesn't exist yet — that's fine */ }
+    }
+  }, 30_000);
 }
 
 function startDailyPlannerCheck(): void {
@@ -155,6 +216,63 @@ function startDailyPlannerCheck(): void {
         mainWindow.webContents.send('planner:auto-call-trigger');
       }
     }
+    // ── Periodic task check-in calls ─────────────────────────────────────────
+    // Call every 2 hours between 9am–6pm if there are pending tasks and Twilio is configured.
+    // Only fires once per hour slot so the 60s interval never double-fires.
+    if (twilioConfig && dailyTasks.length > 0) {
+      const nowH = new Date().getHours();
+      const nowM = new Date().getMinutes();
+      const checkHours = [9, 11, 13, 15, 17]; // 9am, 11am, 1pm, 3pm, 5pm
+      for (const h of checkHours) {
+        if (nowH === h && nowM < 2 && !periodicCallHoursFired.includes(h)) {
+          const pending = dailyTasks.filter(t => !t.completed);
+          if (pending.length > 0) {
+            periodicCallHoursFired.push(h);
+            const taskLines = pending.map((t, i) =>
+              `Task ${i + 1}: ${t.title}${t.dueTime ? `, due at ${t.dueTime}` : ''}.`
+            ).join(' ').replace(/&/g, 'and').replace(/[<>]/g, '').replace(/[^\x20-\x7E]/g, '');
+            const count = pending.length;
+            const twiml = `<Response><Say>Hi! Orbiv check-in. You still have ${count} pending ${count === 1 ? 'task' : 'tasks'}: ${taskLines} Keep it up!</Say></Response>`;
+            console.log(`FocusBubble: periodic check-in call at ${h}:00`);
+            placeTwilioCall(twiml);
+          }
+        }
+      }
+    }
+    // ── Ad-hoc reminder scheduler ────────────────────────────────────────────
+    const now = Date.now();
+    for (const r of adHocReminders) {
+      if (!r.fired && now >= r.fireAtMs) {
+        r.fired = true;
+        console.log(`FocusBubble: firing ad-hoc reminder — "${r.task}"`);
+        // Call Twilio directly from main — works even if UI panel is closed
+        if (twilioConfig) {
+          const { sid, token, fromPhone } = twilioConfig;
+          const toPhone = r.toPhone;
+          if (toPhone) {
+            const safeTask = r.task.replace(/&/g, 'and').replace(/[<>]/g, '').replace(/—|–/g, ', ').replace(/[^\x20-\x7E]/g, '').trim();
+            const twiml = `<Response><Say>Hi! This is Orbiv. This is your reminder to ${safeTask}. Have a great day!</Say></Response>`;
+            axios.post(
+              `https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls.json`,
+              new URLSearchParams({ To: toPhone, From: fromPhone, Twiml: twiml }),
+              { auth: { username: sid, password: token }, headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15_000 }
+            ).then(resp => {
+              console.log(`FocusBubble: ad-hoc reminder call placed — SID ${(resp.data as { sid?: string }).sid}`);
+            }).catch(err => {
+              console.error('FocusBubble: ad-hoc reminder call failed —', err instanceof Error ? err.message : err);
+            });
+          } else {
+            console.warn('FocusBubble: ad-hoc reminder has no toPhone — skipping call');
+          }
+        } else {
+          console.warn('FocusBubble: ad-hoc reminder fired but no twilioConfig — skipping call');
+        }
+        // Still notify renderer so it can show an on-screen indicator
+        mainWindow.webContents.send('planner:adhoc-reminder', { id: r.id, task: r.task });
+      }
+    }
+    // Clean up fired reminders older than 10 minutes
+    adHocReminders = adHocReminders.filter(r => !r.fired || now - r.fireAtMs < 600_000);
   }
   setTimeout(check, 3000);
   setInterval(check, 60_000);
@@ -169,6 +287,8 @@ let bubbleY = 0;
 // ─── Airia Brain configuration ────────────────────────────────────────────────
 const AIRIA_ENDPOINT =
   'https://api.airia.ai/v2/PipelineExecution/d31d96dc-c7aa-4fcf-8c4a-cf2d27f74cf0';
+/** Set to true after Airia returns 402 so we stop calling it for this session. */
+let airiaCreditsExhausted = false;
 
 // How often to poll for new notifications (ms). 60 seconds by default.
 const POLL_INTERVAL_MS = 60_000;
@@ -454,6 +574,7 @@ app.on('ready', async () => {
   createWindow();
   startAiriaPolling();
   startDailyPlannerCheck();
+  startSyncPolling();
 });
 
 app.on('window-all-closed', () => {
@@ -746,12 +867,21 @@ ipcMain.handle('planner:due-tasks', (): DailyTask[] => {
   );
 });
 
+// ─── Ad-hoc reminder scheduling ──────────────────────────────────────────────
+ipcMain.handle('planner:schedule-reminder', (_e, { task, fireAtMs, toPhone }: { task: string; fireAtMs: number; toPhone: string }): { id: string } => {
+  const id = `adhoc-${Date.now()}`;
+  adHocReminders.push({ id, task, fireAtMs, fired: false, toPhone });
+  console.log(`FocusBubble: ad-hoc reminder scheduled — "${task}" at ${new Date(fireAtMs).toLocaleTimeString()} → ${toPhone}`);
+  return { id };
+});
+
 // ─── Twilio config (in-memory for scheduler) ─────────────────────────────────
-interface TwilioConfig { sid: string; token: string; fromPhone: string; autoCallTime: string; }
+interface TwilioConfig { sid: string; token: string; fromPhone: string; autoCallTime: string; toPhone: string; webhookUrl: string; syncSid: string; }
 let twilioConfig: TwilioConfig | null = null;
 
 ipcMain.handle('settings:save-twilio', (_e, cfg: TwilioConfig): void => {
   twilioConfig = cfg;
+  console.log(`FocusBubble: Twilio config saved — toPhone: ${cfg.toPhone}, autoCallTime: ${cfg.autoCallTime}`);
 });
 
 // ─── IPC: Twilio outbound call ────────────────────────────────────────────────
@@ -764,13 +894,47 @@ ipcMain.handle('vc:twilio-call', async (_e, { sid, token, fromPhone, toPhone, ta
     const taskLines = pending.map((t, i) =>
       `Task ${i + 1}: ${t.title}${t.dueTime ? `, due at ${t.dueTime}` : ''}.`
     ).join(' ');
-    const bodyText = count === 0
-      ? `Hi! This is Orbiv, your focus assistant. You have no pending tasks — great work today!`
-      : `Hi! This is Orbiv, your focus assistant. You have ${count} pending ${count === 1 ? 'task' : 'tasks'} today. ${taskLines} Check back with Orbiv when done. Have a productive day!`;
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna">${bodyText}</Say></Response>`;
+
+    // Sanitise helper
+    const sanitise = (s: string) => s
+      .replace(/&/g, 'and').replace(/[<>]/g, '').replace(/[""]/g, '"')
+      .replace(/[''`]/g, "'").replace(/—|–/g, ', ').replace(/[^\x20-\x7E]/g, '').trim();
+
+    const webhookUrl = twilioConfig?.webhookUrl ?? '';
+    const syncSid    = twilioConfig?.syncSid    ?? '';
+
+    let callParams: Record<string, string>;
+
+    if (webhookUrl && count > 0) {
+      // ── Interactive mode: Gather keypresses via webhook ────────────────────
+      // Encode tasks as JSON in the URL so the Function knows what to read
+      const tasksEncoded = encodeURIComponent(JSON.stringify(
+        pending.map(t => ({ id: t.id, title: sanitise(t.title) }))
+      ));
+      const firstTask = pending[0];
+      // & in XML attributes must be &amp; — build URL params separately
+      const gatherParams = [
+        `tasks=${tasksEncoded}`,
+        `taskIndex=0`,
+        `taskId=${encodeURIComponent(firstTask.id)}`,
+        `syncSid=${encodeURIComponent(syncSid)}`,
+      ].join('&amp;');
+      const gatherUrl = `https://${webhookUrl}/gather?${gatherParams}`;
+      const twiml = `<Response><Say>Hi! This is Orbiv. You have ${count} pending ${count === 1 ? 'task' : 'tasks'}.</Say><Gather numDigits="1" action="${gatherUrl}" timeout="10"><Say>Task 1: ${sanitise(firstTask.title)}. Press 1 if completed, press 2 to skip.</Say></Gather><Say>No input received. Check back in the app. Goodbye.</Say></Response>`;
+      console.log('FocusBubble: interactive TwiML (Gather)');
+      callParams = { To: toPhone, From: fromPhone, Twiml: twiml };
+    } else {
+      // ── Simple mode: just read tasks aloud ────────────────────────────────
+      const bodyText = count === 0
+        ? `Hi! This is Orbiv. You have no pending tasks. Great work today!`
+        : `Hi! This is Orbiv. You have ${count} pending ${count === 1 ? 'task' : 'tasks'} today. ${sanitise(taskLines)} Have a productive day!`;
+      console.log('FocusBubble: simple TwiML');
+      callParams = { To: toPhone, From: fromPhone, Twiml: `<Response><Say>${bodyText}</Say></Response>` };
+    }
+
     const resp = await axios.post(
       `https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls.json`,
-      new URLSearchParams({ To: toPhone, From: fromPhone, Twiml: twiml }),
+      new URLSearchParams(callParams),
       { auth: { username: sid, password: token }, headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15_000 }
     );
     const callSid = (resp.data as { sid?: string }).sid ?? 'unknown';
@@ -1121,9 +1285,6 @@ ipcMain.on('vc:speak-stop', () => {
  * Send a voice transcript to Airia for intent classification.
  * Returns structured JSON: { intent, keywords?, app?, target?, query? }
  */
-/** Set to true after Airia returns 402 so we stop calling it for this session. */
-let airiaCreditsExhausted = false;
-
 ipcMain.handle('vc:classify', async (_event, transcript: string): Promise<Record<string, unknown>> => {
   const apiKey = process.env.AIRIA_API_KEY;
   if (!apiKey?.trim() || airiaCreditsExhausted) {
@@ -1145,6 +1306,7 @@ Rules:
 - If the user wants to close/quit an app → close_app
 - If the user wants to play music on Spotify → play_song
 - If the user wants to be called or phoned about their tasks → call_reminder
+- If the user wants to set a reminder to be called at a specific time about a specific task → set_reminder, extract "time" (e.g. "3pm", "15:00") and "task" (what to remind them about)
 - If the transcript looks like STT noise (e.g. "(music playing)", "(applause)", sound descriptions in parentheses) → unknown
 
 Possible intents:
@@ -1162,6 +1324,7 @@ Possible intents:
   { "intent": "joke" }
   { "intent": "help" }
   { "intent": "call_reminder" }
+  { "intent": "set_reminder",       "time": "<time string>", "task": "<task description>" }
   { "intent": "unknown",            "query": "<original transcript>" }
 
 Transcript: "${transcript}"`,
@@ -1229,6 +1392,19 @@ function classifyLocally(t: string): Record<string, unknown> {
 
   // STT noise — sound descriptions in parentheses, e.g. "(music playing)"
   if (/^\(.*\)$/.test(s)) return { intent: 'unknown', query: t };
+
+  // ── Ad-hoc timed reminder ─────────────────────────────────────────────────
+  const reminderMatch = s.match(/\bremind\s*me\b.{0,60}?\bat\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?|\d{1,2}:\d{2})/i);
+  if (reminderMatch) {
+    const time = reminderMatch[1].trim();
+    const task = s
+      .replace(/remind\s*me\b/i, '')
+      .replace(/\bat\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/i, '')
+      .replace(/\bto\b|\babout\b/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    return { intent: 'set_reminder', time, task: task || 'your task' };
+  }
 
   // ── Phone task reminder call ──────────────────────────────────────────────
   if (/\b(call\s*me|phone\s*me|remind\s*me\s*by\s*phone|task\s*(check\s*)?call|phone\s*reminder)\b/.test(s))

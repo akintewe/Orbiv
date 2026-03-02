@@ -205,7 +205,7 @@ contextBridge.exposeInMainWorld('focusBubble', {
   },
 
   /** Persist Twilio config to main process (for auto-call scheduler). */
-  saveTwilioSettings(cfg: { sid: string; token: string; fromPhone: string; autoCallTime: string }): Promise<void> {
+  saveTwilioSettings(cfg: { sid: string; token: string; fromPhone: string; autoCallTime: string; toPhone: string }): Promise<void> {
     return ipcRenderer.invoke('settings:save-twilio', cfg);
   },
 
@@ -214,6 +214,25 @@ contextBridge.exposeInMainWorld('focusBubble', {
     const h = (_e: Electron.IpcRendererEvent) => callback();
     ipcRenderer.on('planner:auto-call-trigger', h);
     return () => ipcRenderer.removeListener('planner:auto-call-trigger', h);
+  },
+
+  /** Schedule an ad-hoc call reminder at a specific timestamp. */
+  scheduleReminder(task: string, fireAtMs: number, toPhone: string): Promise<{ id: string }> {
+    return ipcRenderer.invoke('planner:schedule-reminder', { task, fireAtMs, toPhone });
+  },
+
+  /** Register callback for when a task is marked done via phone keypress. */
+  onTaskDoneViaPhone(callback: (r: { id: string }) => void): () => void {
+    const h = (_e: Electron.IpcRendererEvent, r: { id: string }) => callback(r);
+    ipcRenderer.on('planner:task-done-via-phone', h);
+    return () => ipcRenderer.removeListener('planner:task-done-via-phone', h);
+  },
+
+  /** Register callback for when an ad-hoc reminder fires. */
+  onAdHocReminder(callback: (r: { id: string; task: string }) => void): () => void {
+    const h = (_e: Electron.IpcRendererEvent, r: { id: string; task: string }) => callback(r);
+    ipcRenderer.on('planner:adhoc-reminder', h);
+    return () => ipcRenderer.removeListener('planner:adhoc-reminder', h);
   },
 
   // ── Main → Renderer ────────────────────────────────────────────────────────
@@ -268,8 +287,11 @@ export interface FocusBubbleAPI {
   getDueTasks(): Promise<unknown[]>;
   onPlannerEvent(callback: (e: { type: string }) => void): () => void;
   twilioCall(cfg: { sid: string; token: string; fromPhone: string; toPhone: string; tasks: unknown[] }): Promise<{ ok: boolean; callSid?: string; error?: string }>;
-  saveTwilioSettings(cfg: { sid: string; token: string; fromPhone: string; autoCallTime: string }): Promise<void>;
+  saveTwilioSettings(cfg: { sid: string; token: string; fromPhone: string; autoCallTime: string; toPhone: string }): Promise<void>;
   onAutoCallTrigger(callback: () => void): () => void;
+  scheduleReminder(task: string, fireAtMs: number, toPhone: string): Promise<{ id: string }>;
+  onAdHocReminder(callback: (r: { id: string; task: string }) => void): () => void;
+  onTaskDoneViaPhone(callback: (r: { id: string }) => void): () => void;
 }
 
 export interface FBNotification {

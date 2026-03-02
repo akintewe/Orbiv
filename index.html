@@ -338,7 +338,7 @@
         <header id="panel-header">
           <span id="panel-title">
             <span class="panel-logo">🫧</span>
-            FocusBubble
+            Orbiv
           </span>
           <div id="panel-actions">
             <button id="btn-settings"
@@ -374,7 +374,7 @@
                   clip-rule="evenodd"/>
               </svg>
             </button>
-            <span id="settings-title">Settings</span>
+            <span id="settings-title"></span>
           </div>
 
           <div id="settings-body">
@@ -433,6 +433,16 @@
           <div class="settings-row">
             <label class="settings-label" for="setting-auto-call">Auto-call at</label>
             <input type="time" id="setting-auto-call" class="settings-input" title="Leave blank to disable">
+          </div>
+
+          <div class="settings-row">
+            <label class="settings-label" for="setting-webhook-url">Webhook URL</label>
+            <input type="url" id="setting-webhook-url" class="settings-input" placeholder="https://orbiv-webhook-xxxx.twil.io" autocomplete="off">
+          </div>
+
+          <div class="settings-row">
+            <label class="settings-label" for="setting-sync-sid">Sync SID</label>
+            <input type="text" id="setting-sync-sid" class="settings-input" placeholder="ISxxxxxxxx" autocomplete="off">
           </div>
 
           </div><!-- /settings-body -->
