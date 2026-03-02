@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FocusBubble</title>
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; worker-src blob: 'self'; connect-src 'self' https://huggingface.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co https://cdn.jsdelivr.net blob:; media-src 'self' data: blob:"
+    />
+  </head>
+
+  <body>
+    <!--
+      Invisible full-window drop zone — sits below the blob (z-index 0) but
+      covers the entire window so macOS Chromium always has a visible target
+      to deliver drag events to, regardless of which transparent pixel the
+      cursor is over.  Pointer events are set to none normally; renderer.ts
+      enables them during an active drag so the zone catches the drop.
+    -->
+    <div id="drop-zone" aria-hidden="true"></div>
+
+    <div id="app">
+
+      <!--
+      ════════════════════════════════════════════════════════════════
+       BLOB WIDGET  — Siri-style multi-layer iridescent orb
+       ────────────────────────────────────────────────────────────────
+       Layer stack (back → front):
+         1. #blob-base   — deep navy base fill, full blob shape
+         2. #blob-cyan   — cyan blob (offset/phase A), screen blend
+         3. #blob-blue   — blue blob (offset/phase B), screen blend
+         4. #blob-purple — purple blob (offset/phase C), screen blend
+         5. #blob-spec   — white specular crescent, screen blend
+         6. Hotspot + pinlight ellipses (outside goo so they stay crisp)
+
+       Each color layer has its own noise phase → they drift past each
+       other → iridescent color swirling like Siri.
+
+       All layers share the same GOO filter group → edges merge liquidly.
+       The outer glow sits on the parent wrapper outside goo.
+      ════════════════════════════════════════════════════════════════
+      -->
+
+      <div id="blob-container"
+           role="button"
+           tabindex="0"
+           aria-label="FocusBubble — click to view notifications">
+
+        <svg id="blob-svg"
+             viewBox="-180 -180 360 360"
+             xmlns="http://www.w3.org/2000/svg"
+             overflow="visible"
+             style="pointer-events: bounding-box;">
+
+          <!-- Transparent hit rect — captures clicks on low-alpha pixels -->
+          <rect x="-180" y="-180" width="360" height="360"
+                fill="transparent"
+                style="pointer-events: all;"/>
+
+          <defs>
+
+            <!-- ── GOO FILTER ─────────────────────────────────────────
+                 Smears alpha outward then snaps it back with high
+                 contrast → liquid merged silhouette (Codrops technique).
+                 stdDeviation=12 for the larger blob so merge zone is wide
+                 enough to see; threshold 0 0 0 22 -9 = sharp liquid edge.
+            ──────────────────────────────────────────────────────────── -->
+            <filter id="goo"
+                    x="-50%" y="-50%"
+                    width="200%" height="200%"
+                    color-interpolation-filters="sRGB">
+              <feGaussianBlur in="SourceGraphic"
+                              stdDeviation="12"
+                              result="blur"/>
+              <feColorMatrix  in="blur"
+                              type="matrix"
+                              values="1 0 0 0 0
+                                      0 1 0 0 0
+                                      0 0 1 0 0
+                                      0 0 0 22 -9"
+                              result="goo"/>
+              <feComposite    in="SourceGraphic"
+                              in2="goo"
+                              operator="atop"/>
+            </filter>
+
+            <!-- ── OUTER GLOW (idle) ──────────────────────────────────
+                 Soft ambient halo — on the parent of goo so it bleeds
+                 outside the blob edge cleanly.
+            ──────────────────────────────────────────────────────────── -->
+            <filter id="outer-glow"
+                    x="-60%" y="-60%"
+                    width="220%" height="220%">
+              <feGaussianBlur in="SourceGraphic"
+                              stdDeviation="18"
+                              result="gb"/>
+              <feComponentTransfer in="gb" result="dim">
+                <feFuncA type="linear" slope="0.35"/>
+              </feComponentTransfer>
+              <feMerge>
+                <feMergeNode in="dim"/>
+                <feMergeNode in="SourceGraphic"/>
+              </feMerge>
+            </filter>
+
+            <!-- Alert glow — brighter cyan pulse -->
+            <filter id="outer-glow-alert"
+                    x="-60%" y="-60%"
+                    width="220%" height="220%">
+              <feGaussianBlur in="SourceGraphic"
+                              stdDeviation="22"
+                              result="gb"/>
+              <feComponentTransfer in="gb" result="bright">
+                <feFuncA type="linear" slope="0.55"/>
+              </feComponentTransfer>
+              <feMerge>
+                <feMergeNode in="bright"/>
+                <feMergeNode in="bright"/>
+                <feMergeNode in="SourceGraphic"/>
+              </feMerge>
+            </filter>
+
+            <!-- Drag-over glow — warm amber/orange pulse, wider spread -->
+            <filter id="outer-glow-drag"
+                    x="-70%" y="-70%"
+                    width="240%" height="240%">
+              <feGaussianBlur in="SourceGraphic"
+                              stdDeviation="26"
+                              result="gb"/>
+              <feColorMatrix in="gb" type="matrix"
+                             values="1.4 0.2 0   0 0.05
+                                     0.3 0.8 0   0 0
+                                     0   0   0.2 0 0
+                                     0   0   0   0.65 0"
+                             result="warm"/>
+              <feMerge>
+                <feMergeNode in="warm"/>
+                <feMergeNode in="warm"/>
+                <feMergeNode in="SourceGraphic"/>
+              </feMerge>
+            </filter>
+
+            <!-- Drag-over gradient layers — warm amber/orange versions of base/cyan/blue -->
+            <!-- Warm base: amber-red sphere -->
+            <radialGradient id="grad-base-drag"
+                            gradientUnits="userSpaceOnUse"
+                            cx="-20" cy="-30" r="160">
+              <stop offset="0%"   stop-color="#7c2d12" stop-opacity="0.95"/>
+              <stop offset="40%"  stop-color="#431407" stop-opacity="0.90"/>
+              <stop offset="100%" stop-color="#1c0a03" stop-opacity="0.85"/>
+            </radialGradient>
+
+            <!-- Warm cyan: orange highlight -->
+            <radialGradient id="grad-cyan-drag"
+                            gradientUnits="userSpaceOnUse"
+                            cx="-50" cy="-60" r="140">
+              <stop offset="0%"   stop-color="#fb923c" stop-opacity="0.92"/>
+              <stop offset="45%"  stop-color="#f97316" stop-opacity="0.60"/>
+              <stop offset="100%" stop-color="#c2410c" stop-opacity="0.00"/>
+            </radialGradient>
+
+            <!-- Warm blue: amber/gold mid -->
+            <radialGradient id="grad-blue-drag"
+                            gradientUnits="userSpaceOnUse"
+                            cx="20" cy="10" r="155">
+              <stop offset="0%"   stop-color="#fbbf24" stop-opacity="0.78"/>
+              <stop offset="50%"  stop-color="#f59e0b" stop-opacity="0.52"/>
+              <stop offset="100%" stop-color="#92400e" stop-opacity="0.00"/>
+            </radialGradient>
+
+            <!-- Warm purple: red/crimson -->
+            <radialGradient id="grad-purple-drag"
+                            gradientUnits="userSpaceOnUse"
+                            cx="40" cy="50" r="145">
+              <stop offset="0%"   stop-color="#f87171" stop-opacity="0.72"/>
+              <stop offset="40%"  stop-color="#ef4444" stop-opacity="0.48"/>
+              <stop offset="100%" stop-color="#b91c1c" stop-opacity="0.00"/>
+            </radialGradient>
+
+            <!-- ── GRADIENTS ──────────────────────────────────────────
+                 Each color layer has its own radial gradient.
+                 All gradients use userSpaceOnUse so they stay fixed
+                 as the blob morphs → colours shift across the blob face.
+
+                 BASE  — deep navy/indigo, gives depth & makes orb read
+                         as 3D. Fairly opaque so you see the sphere shape.
+                 CYAN  — bright cyan highlight, offset top-left (like Siri)
+                 BLUE  — electric blue, fills the mid zone
+                 PURPLE— deep violet/magenta for the Siri iridescence
+                 SPEC  — white specular crescent, upper-left
+
+                 All colour layers use mix-blend-mode:screen in CSS so
+                 they ADD light on top of each other → glowing orb look.
+            ──────────────────────────────────────────────────────────── -->
+
+            <!-- Base: deep volumetric navy sphere -->
+            <radialGradient id="grad-base"
+                            gradientUnits="userSpaceOnUse"
+                            cx="-20" cy="-30" r="160">
+              <stop offset="0%"   stop-color="#1e3a5f" stop-opacity="0.92"/>
+              <stop offset="40%"  stop-color="#0d1f3c" stop-opacity="0.88"/>
+              <stop offset="100%" stop-color="#050d1a" stop-opacity="0.82"/>
+            </radialGradient>
+
+            <!-- Cyan layer: bright top-left highlight -->
+            <radialGradient id="grad-cyan"
+                            gradientUnits="userSpaceOnUse"
+                            cx="-50" cy="-60" r="140">
+              <stop offset="0%"   stop-color="#67e8f9" stop-opacity="0.90"/>
+              <stop offset="45%"  stop-color="#22d3ee" stop-opacity="0.55"/>
+              <stop offset="100%" stop-color="#0891b2" stop-opacity="0.00"/>
+            </radialGradient>
+
+            <!-- Blue layer: mid electric blue -->
+            <radialGradient id="grad-blue"
+                            gradientUnits="userSpaceOnUse"
+                            cx="20" cy="10" r="155">
+              <stop offset="0%"   stop-color="#60a5fa" stop-opacity="0.75"/>
+              <stop offset="50%"  stop-color="#3b82f6" stop-opacity="0.50"/>
+              <stop offset="100%" stop-color="#1d4ed8" stop-opacity="0.00"/>
+            </radialGradient>
+
+            <!-- Purple layer: iridescent violet/magenta -->
+            <radialGradient id="grad-purple"
+                            gradientUnits="userSpaceOnUse"
+                            cx="40" cy="50" r="145">
+              <stop offset="0%"   stop-color="#c084fc" stop-opacity="0.70"/>
+              <stop offset="40%"  stop-color="#a855f7" stop-opacity="0.45"/>
+              <stop offset="100%" stop-color="#7c3aed" stop-opacity="0.00"/>
+            </radialGradient>
+
+            <!-- Specular: white crescent, upper-left -->
+            <radialGradient id="grad-spec"
+                            gradientUnits="userSpaceOnUse"
+                            cx="-70" cy="-80" r="100">
+              <stop offset="0%"   stop-color="white" stop-opacity="0.55"/>
+              <stop offset="40%"  stop-color="white" stop-opacity="0.18"/>
+              <stop offset="100%" stop-color="white" stop-opacity="0.00"/>
+            </radialGradient>
+
+          </defs>
+
+          <!-- ── LAYER STACK ──────────────────────────────────────────
+               A) #blob-glow-wrap — outer glow (outside goo so it bleeds)
+               B) #blob-goo-group — goo filter for liquid edges
+                    1. blob-base   — full opaque navy base (shape anchor)
+                    2. blob-cyan   — cyan blob, screen blend, phase 0
+                    3. blob-blue   — blue blob, screen blend, phase +offset
+                    4. blob-purple — purple blob, screen blend, phase +offset
+                    5. blob-spec   — specular crescent, screen blend
+               C) hotspot + pinlight (outside goo, stay crisp)
+          ──────────────────────────────────────────────────────────── -->
+
+          <!-- A: outer glow wrapper -->
+          <g id="blob-glow-wrap" filter="url(#outer-glow)">
+
+            <!-- B: goo filter group — all blobs merge together -->
+            <g id="blob-goo-group" filter="url(#goo)">
+
+              <!-- 1. Base — deep navy, gives the sphere its solid volume -->
+              <path id="blob-base"
+                    d=""
+                    fill="url(#grad-base)"/>
+
+              <!-- 2. Cyan — screened on top, drifts independently -->
+              <path id="blob-cyan"
+                    d=""
+                    fill="url(#grad-cyan)"
+                    style="mix-blend-mode: screen;"/>
+
+              <!-- 3. Blue — screened, different noise phase -->
+              <path id="blob-blue"
+                    d=""
+                    fill="url(#grad-blue)"
+                    style="mix-blend-mode: screen;"/>
+
+              <!-- 4. Purple/violet — screened, another phase offset -->
+              <path id="blob-purple"
+                    d=""
+                    fill="url(#grad-purple)"
+                    style="mix-blend-mode: screen;"/>
+
+              <!-- 5. Specular crescent — same shape, scaled inward -->
+              <path id="blob-spec"
+                    d=""
+                    fill="url(#grad-spec)"
+                    style="mix-blend-mode: screen;"
+                    opacity="0.8"/>
+
+            </g><!-- /goo-group -->
+
+          </g><!-- /glow-wrap -->
+
+          <!-- C: pin-point glints — outside goo so they stay sharp -->
+          <ellipse id="blob-hotspot"
+                   cx="-55" cy="-65"
+                   rx="28" ry="18"
+                   fill="white"
+                   opacity="0.28"
+                   style="filter: blur(10px);"/>
+
+          <ellipse id="blob-pinlight"
+                   cx="-62" cy="-72"
+                   rx="10" ry="6"
+                   fill="white"
+                   opacity="0.55"/>
+
+        </svg>
+
+        <!-- Badge — HTML div, NOT inside SVG so goo filter never touches it -->
+        <div id="badge" aria-live="polite" hidden>
+          <span id="badge-count">0</span>
+        </div>
+
+      </div><!-- /blob-container -->
+
+      <!-- ════════════════════════════════════════════════════════
+           IDLE PILL — Dynamic Island-style strip shown in idle mode.
+           The blob layers remain in the DOM (just faded); the pill
+           is a separate lightweight element that crossfades in.
+           Hidden by default; shown by enterIdleMode() in renderer.
+      ════════════════════════════════════════════════════════════ -->
+      <div id="idle-pill" hidden role="button" tabindex="0"
+           aria-label="FocusBubble idle — click to restore">
+        <div id="idle-pill-inner">
+          <div id="idle-pill-shimmer"></div>
+          <canvas id="idle-viz" width="90" height="22" aria-hidden="true"></canvas>
+          <div id="idle-dot" hidden></div>
+        </div>
+      </div>
+
+      <!-- ════════════════════════════════════════════════════════
+           NOTIFICATION PANEL (expanded state)
+      ════════════════════════════════════════════════════════════ -->
+      <div id="panel" aria-live="polite" aria-label="Notifications" hidden>
+
+        <header id="panel-header">
+          <span id="panel-title">
+            <span class="panel-logo">🫧</span>
+            FocusBubble
+          </span>
+          <div id="panel-actions">
+            <button id="btn-settings"
+                    title="Settings"
+                    aria-label="Open settings">⚙</button>
+            <button id="btn-mark-all"
+                    title="Mark all as read"
+                    aria-label="Mark all as read">✓ All read</button>
+            <button id="btn-close"
+                    title="Close (Esc)"
+                    aria-label="Close panel">✕</button>
+          </div>
+        </header>
+
+        <div id="platform-tables"></div>
+
+        <div id="empty-state" hidden>
+          <div class="empty-icon">🌊</div>
+          <p>All caught up — enjoy the calm.</p>
+        </div>
+
+        <!-- ════════════════════════════════════════════════════════
+             SETTINGS CARD — slides in over the notification list.
+             Hidden by default; shown by openSettings() in renderer.
+        ════════════════════════════════════════════════════════════ -->
+        <div id="settings-card" hidden role="dialog" aria-label="Settings">
+
+          <div id="settings-header">
+            <button id="settings-back" aria-label="Back to notifications">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14" aria-hidden="true">
+                <path fill-rule="evenodd"
+                  d="M12.707 5.293a1 1 0 0 1 0 1.414L9.414 10l3.293 3.293a1 1 0 0 1-1.414 1.414l-4-4a1 1 0 0 1 0-1.414l4-4a1 1 0 0 1 1.414 0z"
+                  clip-rule="evenodd"/>
+              </svg>
+            </button>
+            <span id="settings-title">Settings</span>
+          </div>
+
+          <div id="settings-body">
+
+            <div class="settings-row">
+              <label class="settings-label" for="setting-idle-timeout">Idle after</label>
+              <select id="setting-idle-timeout" class="settings-select">
+                <option value="30">30 seconds</option>
+                <option value="60" selected>1 minute</option>
+                <option value="120">2 minutes</option>
+                <option value="0">Never</option>
+              </select>
+            </div>
+
+            <div class="settings-row">
+              <label class="settings-label" for="setting-idle-position">Idle position</label>
+              <select id="setting-idle-position" class="settings-select">
+                <option value="top-center" selected>Top center</option>
+                <option value="top-right">Top right</option>
+                <option value="bottom-right">Bottom right</option>
+                <option value="remember-last">Remember last</option>
+              </select>
+            </div>
+
+            <div class="settings-row">
+              <label class="settings-label" for="setting-idle-shape">Idle shape</label>
+              <select id="setting-idle-shape" class="settings-select">
+                <option value="pill" selected>Pill (Dynamic Island)</option>
+                <option value="circle">Circle</option>
+                <option value="hidden">Hidden</option>
+              </select>
+            </div>
+
+          </div><!-- /settings-body -->
+
+          <div id="settings-footer">
+            <button id="settings-save" class="settings-save-btn">Save</button>
+          </div>
+
+        </div><!-- /settings-card -->
+
+        <!-- 8-way resize handles — inside #panel so click-outside detection ignores them -->
+        <div class="resize-handle" data-dir="n"  aria-hidden="true"></div>
+        <div class="resize-handle" data-dir="s"  aria-hidden="true"></div>
+        <div class="resize-handle" data-dir="e"  aria-hidden="true"></div>
+        <div class="resize-handle" data-dir="w"  aria-hidden="true"></div>
+        <div class="resize-handle" data-dir="nw" aria-hidden="true"></div>
+        <div class="resize-handle" data-dir="ne" aria-hidden="true"></div>
+        <div class="resize-handle" data-dir="sw" aria-hidden="true"></div>
+        <div class="resize-handle" data-dir="se" aria-hidden="true"></div>
+
+      </div>
+
+    </div><!-- /app -->
+
+    <!-- ═══════════════════════════════════════════════════════════════════════
+         FILE CHAT  — speech-bubble overlay that pops out of the blob when a
+         file is dropped.  Hidden by default; shown by openFileChat().
+    ════════════════════════════════════════════════════════════════════════ -->
+    <div id="file-chat" aria-modal="true" role="dialog" aria-label="File assistant" hidden>
+
+      <div id="file-chat-bubble">
+
+        <div id="file-chat-header">
+          <!-- Back arrow — collapses chat and returns to idle blob -->
+          <button id="file-chat-back" aria-label="Back to bubble">
+            <svg viewBox="0 0 20 20" fill="currentColor" width="15" height="15" aria-hidden="true">
+              <path fill-rule="evenodd" d="M12.707 5.293a1 1 0 0 1 0 1.414L9.414 10l3.293 3.293a1 1 0 0 1-1.414 1.414l-4-4a1 1 0 0 1 0-1.414l4-4a1 1 0 0 1 1.414 0z" clip-rule="evenodd"/>
+            </svg>
+          </button>
+
+          <!-- File info: label + shimmering filename -->
+          <div class="fc-file-info">
+            <span class="fc-file-label">File dropped</span>
+            <span id="file-chat-filename" class="file-chat-name"></span>
+          </div>
+
+          <!-- Dismiss ✕ -->
+          <button id="file-chat-close" aria-label="Dismiss">✕</button>
+        </div>
+
+        <div id="file-chat-messages" aria-live="polite"></div>
+
+        <form id="file-chat-form" autocomplete="off">
+          <textarea
+            id="file-chat-input"
+            rows="1"
+            placeholder="Type what you'd like to do…"
+            aria-label="Your reply"
+          ></textarea>
+          <button type="submit" id="file-chat-send" aria-label="Send">
+            <svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16" aria-hidden="true">
+              <path d="M10.894 2.553a1 1 0 0 0-1.788 0l-7 14a1 1 0 0 0 1.169 1.409l.003-.001.773-.255 8.736-2.873a1 1 0 0 0 0-1.897L4.991 10.51l-.774-.255a1 1 0 0 0-1.169 1.41L4.94 14.5l6.053-1.99L4.94 10.52l7.566-7.085-1.612 6.44 6.154-2.027-12 5 3-12z" transform="rotate(-40 10 10)"/>
+            </svg>
+          </button>
+        </form>
+
+      </div><!-- /file-chat-bubble -->
+
+    </div><!-- /file-chat -->
+
+    <!-- ════════════════════════════════════════════════════════════════════════
+         VOICE COMMAND / FILE SEARCH  — revealed by double-clicking the blob.
+         Phases: listening → processing → results / screenshot preview
+    ════════════════════════════════════════════════════════════════════════ -->
+    <div id="file-search" hidden aria-modal="true" role="dialog" aria-label="Voice command">
+      <div id="fs-bubble">
+
+        <div id="fs-header">
+          <button id="fs-back" aria-label="Back">
+            <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
+              <path fill-rule="evenodd" d="M12.707 5.293a1 1 0 0 1 0 1.414L9.414 10l3.293 3.293a1 1 0 0 1-1.414 1.414l-4-4a1 1 0 0 1 0-1.414l4-4a1 1 0 0 1 1.414 0z" clip-rule="evenodd"/>
+            </svg>
+          </button>
+          <span id="fs-title">
+            <!-- icon swaps in JS between mic / search / camera -->
+            <svg id="fs-title-icon" viewBox="0 0 20 20" fill="currentColor" width="13" height="13" style="opacity:.65;flex-shrink:0">
+              <path fill-rule="evenodd" d="M7 4a3 3 0 0 1 6 0v4a3 3 0 1 1-6 0V4zm3 10a7 7 0 0 0 7-7 1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 7 7zm0 2a1 1 0 1 0 0 2h.01a1 1 0 1 0 0-2H10z" clip-rule="evenodd"/>
+            </svg>
+            <span id="fs-title-text">Hey, what can I help with?</span>
+          </span>
+          <button id="fs-close" aria-label="Close">✕</button>
+        </div>
+
+        <!-- Listening orb + waveform bars — shown during voice capture -->
+        <div id="vc-listen-view">
+          <div id="vc-orb" aria-hidden="true">
+            <div class="vc-ring vc-ring-1"></div>
+            <div class="vc-ring vc-ring-2"></div>
+            <div class="vc-ring vc-ring-3"></div>
+            <svg id="vc-mic-icon" viewBox="0 0 20 20" fill="currentColor" width="22" height="22">
+              <path fill-rule="evenodd" d="M7 4a3 3 0 0 1 6 0v4a3 3 0 1 1-6 0V4zm3 10a7 7 0 0 0 7-7 1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 7 7zm0 2a1 1 0 1 0 0 2h.01a1 1 0 1 0 0-2H10z" clip-rule="evenodd"/>
+            </svg>
+          </div>
+          <div id="vc-bars" aria-hidden="true">
+            <span></span><span></span><span></span><span></span><span></span>
+          </div>
+          <p id="vc-label">Listening…</p>
+          <button id="vc-type-instead" type="button">type instead</button>
+        </div>
+
+        <!-- ════════════════════════════════════════════
+             MEETING RECORDING VIEW — active while notes
+             are being recorded, replaces listen view.
+        ════════════════════════════════════════════ -->
+        <div id="meeting-view" hidden>
+          <div id="meeting-rec-row">
+            <span id="meeting-rec-dot"></span>
+            <span id="meeting-rec-label">Recording meeting…</span>
+            <span id="meeting-elapsed">0:00</span>
+          </div>
+          <div id="meeting-chunk-label">Waiting for speech…</div>
+          <div id="meeting-transcript-preview"></div>
+          <button id="meeting-stop-btn" type="button">Stop &amp; Save Notes</button>
+        </div>
+
+        <!-- ══════════════════════════════════════════════════════════════════
+             DAILY PLANNER VIEW — shown during morning check-in
+        ══════════════════════════════════════════════════════════════════ -->
+        <div id="planner-view" hidden>
+          <div id="planner-greeting"></div>
+          <div id="planner-yn-row" hidden>
+            <button id="planner-yes-btn" type="button">Yes, I have plans</button>
+            <button id="planner-no-btn"  type="button">No plans today</button>
+          </div>
+          <div id="planner-task-list"></div>
+          <div id="planner-input-row" hidden>
+            <input id="planner-input" type="text" placeholder="Type a task or speak…" autocomplete="off" />
+            <button id="planner-input-send" type="button">Add</button>
+          </div>
+          <div id="planner-btn-row" hidden>
+            <button id="planner-done-btn" type="button">Done — start my day</button>
+          </div>
+        </div>
+
+        <!-- Text fallback / transcript display — shown after voice or as fallback -->
+        <div id="fs-input-wrap" hidden>
+          <input id="fs-input" type="text" placeholder="Type a command or search…"
+                 autocomplete="off" spellcheck="false" aria-label="Command or search"/>
+          <button id="fs-mic" type="button" aria-label="Use voice" title="Use voice">
+            <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
+              <path fill-rule="evenodd" d="M7 4a3 3 0 0 1 6 0v4a3 3 0 1 1-6 0V4zm3 10a7 7 0 0 0 7-7 1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 7 7zm0 2a1 1 0 1 0 0 2h.01a1 1 0 1 0 0-2H10z" clip-rule="evenodd"/>
+            </svg>
+          </button>
+          <button id="fs-submit" type="button" aria-label="Run">
+            <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
+              <path fill-rule="evenodd" d="M8 4a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM2 8a6 6 0 1 1 10.89 3.476l4.817 4.817a1 1 0 0 1-1.414 1.414l-4.816-4.816A6 6 0 0 1 2 8z" clip-rule="evenodd"/>
+            </svg>
+          </button>
+        </div>
+
+        <!-- Status + results (file list or screenshot preview) -->
+        <div id="fs-status" hidden></div>
+        <div id="fs-results" hidden></div>
+
+        <!-- Screenshot preview — shown after capture -->
+        <div id="vc-screenshot-wrap" hidden>
+          <img id="vc-screenshot-img" src="" alt="Screenshot preview"/>
+          <p id="vc-screenshot-label"></p>
+        </div>
+
+      </div><!-- /fs-bubble -->
+    </div><!-- /file-search -->
+
+    <!-- ══════════════════════════════════════════════════════════════════════
+         REMINDER OVERLAY — floats above everything, shown for task check-ins
+    ══════════════════════════════════════════════════════════════════════ -->
+    <div id="reminder-overlay" hidden>
+      <div id="reminder-text"></div>
+      <div id="reminder-btn-row">
+        <button id="reminder-yes"    type="button">Done ✓</button>
+        <button id="reminder-no"     type="button">Not yet</button>
+        <button id="reminder-snooze" type="button">Snooze 30m</button>
+      </div>
+    </div>
+
+    <script type="module" src="/src/renderer.ts"></script>
+  </body>
+</html>
