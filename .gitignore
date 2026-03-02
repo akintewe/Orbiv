@@ -96,3 +96,6 @@ dist/
 # Google OAuth credentials and saved token — never commit these
 credentials.json
 token.json
+
+# Demo video (too large for git — hosted as GitHub release asset)
+*.mp4

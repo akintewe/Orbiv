@@ -2,7 +2,7 @@
 
 > An always-on-top, transparent macOS desktop assistant that lives as a morphing water-droplet bubble on your screen. Speak to it. It listens, thinks, and acts.
 
-https://github.com/user-attachments/assets/9bbdf102-3618-40a7-97c0-799f4bb0e857
+<video src="https://github.com/akintewe/Orbiv/releases/download/v0.1.0/grok-video-9bbdf102-3618-40a7-97c0-799f4bb0e857.mp4" autoplay loop muted playsinline width="100%"></video>
 
 ---
 
@@ -16,7 +16,7 @@ Double-click the orb → it activates your mic → speak naturally → Orbiv tra
 
 ## Demo
 
-https://github.com/user-attachments/assets/9bbdf102-3618-40a7-97c0-799f4bb0e857
+<video src="https://github.com/akintewe/Orbiv/releases/download/v0.1.0/grok-video-9bbdf102-3618-40a7-97c0-799f4bb0e857.mp4" autoplay loop muted playsinline width="100%"></video>
 
 ---
 
