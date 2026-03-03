@@ -16,11 +16,11 @@ const config: ForgeConfig = {
     appCategoryType: 'public.app-category.productivity',
     icon: 'assets/icon',
     ignore: (path: string) => {
-      // Always include .vite build output and runtime node_modules
-      if (path === '' || path === '/' ) return false;
+      if (path === '' || path === '/') return false;
+      // Always include .vite build output
       if (path.startsWith('/.vite')) return false;
+      // Include node_modules but strip dev-only packages
       if (path.startsWith('/node_modules')) {
-        // Exclude heavy dev-only packages not needed at runtime
         const devOnly = [
           '/node_modules/typescript',
           '/node_modules/vite',
@@ -35,9 +35,11 @@ const config: ForgeConfig = {
         if (devOnly.some(d => path.startsWith(d))) return true;
         return false;
       }
-      // Exclude source/build files not needed at runtime
+      // Exclude everything else not needed at runtime
       if (path.startsWith('/src/')) return true;
       if (path.startsWith('/scripts/')) return true;
+      if (path.startsWith('/out/')) return true;
+      if (path.startsWith('/.git')) return true;
       if (path.startsWith('/assets/icon.iconset')) return true;
       if (path === '/assets/icon_source.png') return true;
       return false;

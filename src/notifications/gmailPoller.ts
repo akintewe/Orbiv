@@ -11,15 +11,15 @@ import fs from 'fs';
 import path from 'path';
 import http from 'http';
 import { parse as parseUrl } from 'url';
-import { shell } from 'electron';
+import { shell, app } from 'electron';
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
-// At runtime __dirname is <project>/.vite/build (Vite output directory).
-// Walk up 2 levels to reach the project root where credentials.json lives.
-const PROJECT_ROOT = path.join(__dirname, '..', '..');
+// Store credentials and token in userData so they persist across app updates
+// and work in both dev and packaged builds.
+const USER_DATA = app.getPath('userData');
 
-const CREDENTIALS_PATH = path.join(PROJECT_ROOT, 'credentials.json');
-const TOKEN_PATH = path.join(PROJECT_ROOT, 'token.json');
+const CREDENTIALS_PATH = path.join(USER_DATA, 'credentials.json');
+const TOKEN_PATH = path.join(USER_DATA, 'token.json');
 
 // ─── OAuth scopes ─────────────────────────────────────────────────────────────
 const SCOPES = ['https://www.googleapis.com/auth/gmail.readonly'];
