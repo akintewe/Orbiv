@@ -16,11 +16,26 @@ const config: ForgeConfig = {
     appCategoryType: 'public.app-category.productivity',
     icon: 'assets/icon',
     ignore: (path: string) => {
-      // Always include node_modules
-      if (path.startsWith('/node_modules')) return false;
-      // Always include .vite build output
+      // Always include .vite build output and runtime node_modules
+      if (path === '' || path === '/' ) return false;
       if (path.startsWith('/.vite')) return false;
-      // Exclude source files not needed at runtime
+      if (path.startsWith('/node_modules')) {
+        // Exclude heavy dev-only packages not needed at runtime
+        const devOnly = [
+          '/node_modules/typescript',
+          '/node_modules/vite',
+          '/node_modules/eslint',
+          '/node_modules/@typescript-eslint',
+          '/node_modules/electron-squirrel-startup',
+          '/node_modules/@electron-forge',
+          '/node_modules/@electron/fuses',
+          '/node_modules/electron/',
+          '/node_modules/.bin',
+        ];
+        if (devOnly.some(d => path.startsWith(d))) return true;
+        return false;
+      }
+      // Exclude source/build files not needed at runtime
       if (path.startsWith('/src/')) return true;
       if (path.startsWith('/scripts/')) return true;
       if (path.startsWith('/assets/icon.iconset')) return true;
