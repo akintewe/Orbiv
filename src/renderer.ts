@@ -249,11 +249,7 @@ const settingTimeoutEl = document.getElementById('setting-idle-timeout') as HTML
 const settingPositionEl= document.getElementById('setting-idle-position')as HTMLSelectElement;
 const settingShapeEl   = document.getElementById('setting-idle-shape')   as HTMLSelectElement;
 const settingUserPhoneEl   = document.getElementById('setting-user-phone')   as HTMLInputElement;
-const settingTwilioSidEl   = document.getElementById('setting-twilio-sid')   as HTMLInputElement;
-const settingTwilioTokenEl = document.getElementById('setting-twilio-token') as HTMLInputElement;
-const settingTwilioPhoneEl = document.getElementById('setting-twilio-phone') as HTMLInputElement;
 const settingAutoCallEl    = document.getElementById('setting-auto-call')    as HTMLInputElement;
-const settingWebhookUrlEl  = document.getElementById('setting-webhook-url')  as HTMLInputElement;
 const settingSyncSidEl     = document.getElementById('setting-sync-sid')     as HTMLInputElement;
 
 // ── Meeting notetaker DOM refs ────────────────────────────────────────────────
@@ -290,11 +286,7 @@ interface FBSettings {
   idlePosition: 'top-center' | 'top-right' | 'bottom-right' | 'remember-last';
   idleShape: 'pill' | 'circle' | 'hidden';
   userPhone: string;
-  twilioSid: string;
-  twilioToken: string;
-  twilioPhone: string;
   autoCallTime: string;
-  webhookUrl: string;
   syncSid: string;
 }
 
@@ -303,7 +295,7 @@ const DEFAULT_SETTINGS: FBSettings = {
   idleTimeoutSeconds: 60,
   idlePosition: 'top-center',
   idleShape: 'pill',
-  userPhone: '', twilioSid: '', twilioToken: '', twilioPhone: '', autoCallTime: '', webhookUrl: '', syncSid: '',
+  userPhone: '', autoCallTime: '', syncSid: '',
 };
 
 function loadSettings(): FBSettings {
@@ -314,13 +306,9 @@ function loadSettings(): FBSettings {
       idleTimeoutSeconds: parsed.idleTimeoutSeconds ?? DEFAULT_SETTINGS.idleTimeoutSeconds,
       idlePosition:       parsed.idlePosition       ?? DEFAULT_SETTINGS.idlePosition,
       idleShape:          parsed.idleShape           ?? DEFAULT_SETTINGS.idleShape,
-      userPhone:    (parsed as Partial<FBSettings>).userPhone    ?? '',
-      twilioSid:    (parsed as Partial<FBSettings>).twilioSid    ?? '',
-      twilioToken:  (parsed as Partial<FBSettings>).twilioToken  ?? '',
-      twilioPhone:  (parsed as Partial<FBSettings>).twilioPhone  ?? '',
-      autoCallTime: (parsed as Partial<FBSettings>).autoCallTime ?? '',
-      webhookUrl:   (parsed as Partial<FBSettings>).webhookUrl   ?? '',
-      syncSid:      (parsed as Partial<FBSettings>).syncSid      ?? '',
+      userPhone:    parsed.userPhone    ?? '',
+      autoCallTime: parsed.autoCallTime ?? '',
+      syncSid:      parsed.syncSid      ?? '',
     };
   } catch { return { ...DEFAULT_SETTINGS }; }
 }
@@ -330,12 +318,10 @@ function saveSettings(s: FBSettings): void {
 }
 
 let settings: FBSettings = loadSettings();
-// Push saved Twilio config to main process on startup so periodic calls work immediately
-if (settings.twilioSid && settings.twilioToken && settings.twilioPhone && settings.userPhone) {
+// Push saved config to main process on startup so periodic/auto calls work immediately
+if (settings.userPhone) {
   window.focusBubble.saveTwilioSettings({
-    sid: settings.twilioSid, token: settings.twilioToken,
-    fromPhone: settings.twilioPhone, autoCallTime: settings.autoCallTime,
-    toPhone: settings.userPhone, webhookUrl: settings.webhookUrl, syncSid: settings.syncSid,
+    toPhone: settings.userPhone, autoCallTime: settings.autoCallTime, syncSid: settings.syncSid,
   });
 }
 
@@ -1798,35 +1784,26 @@ function parseReminderTime(timeStr: string): number | null {
 
 // ── Twilio phone reminder call ────────────────────────────────────────────────
 async function vcDoTwilioCall(): Promise<void> {
-  const { userPhone, twilioSid, twilioToken, twilioPhone } = settings;
-  console.log('[Twilio] vcDoTwilioCall triggered', { userPhone, twilioSid: twilioSid ? twilioSid.slice(0,6)+'…' : '(empty)', twilioPhone, tokenSet: !!twilioToken });
-  if (!userPhone || !twilioSid || !twilioToken || !twilioPhone) {
+  const { userPhone } = settings;
+  if (!userPhone) {
     vcLabel.textContent = 'Setup required — open Settings';
-    console.warn('[Twilio] Missing credentials — aborting');
-    await vcSpeak('Please set up your phone number and Twilio credentials in Settings first.');
+    await vcSpeak('Please add your phone number in Settings first.');
     return;
   }
   const pending = plannerTasks.filter(t => !t.completed);
-  console.log('[Twilio] pending tasks:', pending.length, pending.map(t => t.title));
-  // Use a test task if no tasks are set yet, so we can verify the call works
   const callTasks = pending.length > 0 ? pending : [{ id: 'test', title: 'Test call from Orbiv', completed: false, dueTime: '' }];
   vcLabel.textContent = `Calling ${userPhone}…`;
   await vcSpeak(`Calling you now${pending.length > 0 ? ` to review your ${pending.length} pending ${pending.length === 1 ? 'task' : 'tasks'}` : ' — this is a test'}.`);
   try {
-    const result = await window.focusBubble.twilioCall({
-      sid: twilioSid, token: twilioToken, fromPhone: twilioPhone, toPhone: userPhone, tasks: callTasks as never,
-    });
-    console.log('[Twilio] result:', result);
+    const result = await window.focusBubble.twilioCall({ toPhone: userPhone, tasks: callTasks as never });
     if (result.ok) {
       vcLabel.textContent = 'Call placed! Check your phone.';
       await vcSpeak('Call placed — check your phone!');
     } else {
       vcLabel.textContent = 'Call failed';
-      console.error('[Twilio] Call failed:', result.error);
-      await vcSpeak(`The call failed. ${result.error ?? 'Please check your Twilio credentials in Settings.'}`);
+      await vcSpeak(`The call failed. ${result.error ?? 'Please try again later.'}`);
     }
-  } catch (e) {
-    console.error('[Twilio] Exception:', e);
+  } catch {
     await vcSpeak('Something went wrong placing the call.');
   }
 }
@@ -2233,13 +2210,9 @@ function syncSettingsToUI(): void {
   settingTimeoutEl.value  = String(settings.idleTimeoutSeconds);
   settingPositionEl.value = settings.idlePosition;
   settingShapeEl.value    = settings.idleShape;
-  settingUserPhoneEl.value   = settings.userPhone;
-  settingTwilioSidEl.value   = settings.twilioSid;
-  settingTwilioTokenEl.value = settings.twilioToken;
-  settingTwilioPhoneEl.value = settings.twilioPhone;
-  settingAutoCallEl.value    = settings.autoCallTime;
-  settingWebhookUrlEl.value  = settings.webhookUrl;
-  settingSyncSidEl.value     = settings.syncSid;
+  settingUserPhoneEl.value = settings.userPhone;
+  settingAutoCallEl.value  = settings.autoCallTime;
+  settingSyncSidEl.value   = settings.syncSid;
 }
 
 function openSettings(): void {
@@ -3163,18 +3136,12 @@ settingsSave.addEventListener('click', () => {
     idlePosition: settingPositionEl.value as FBSettings['idlePosition'],
     idleShape:    settingShapeEl.value    as FBSettings['idleShape'],
     userPhone:    settingUserPhoneEl.value.trim(),
-    twilioSid:    settingTwilioSidEl.value.trim(),
-    twilioToken:  settingTwilioTokenEl.value.trim(),
-    twilioPhone:  settingTwilioPhoneEl.value.trim(),
     autoCallTime: settingAutoCallEl.value.trim(),
-    webhookUrl:   settingWebhookUrlEl.value.trim(),
     syncSid:      settingSyncSidEl.value.trim(),
   };
   saveSettings(settings);
   window.focusBubble.saveTwilioSettings({
-    sid: settings.twilioSid, token: settings.twilioToken,
-    fromPhone: settings.twilioPhone, autoCallTime: settings.autoCallTime,
-    toPhone: settings.userPhone, webhookUrl: settings.webhookUrl, syncSid: settings.syncSid,
+    toPhone: settings.userPhone, autoCallTime: settings.autoCallTime, syncSid: settings.syncSid,
   });
   if (!isIdle) resetIdleTimer();
   closeSettings();

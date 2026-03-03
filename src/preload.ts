@@ -199,13 +199,13 @@ contextBridge.exposeInMainWorld('focusBubble', {
     };
   },
 
-  /** Place an outbound Twilio call to read pending tasks aloud. */
-  twilioCall(cfg: { sid: string; token: string; fromPhone: string; toPhone: string; tasks: unknown[] }): Promise<{ ok: boolean; callSid?: string; error?: string }> {
+  /** Place an outbound call via Orbiv backend (no credentials needed in app). */
+  twilioCall(cfg: { toPhone: string; tasks: unknown[] }): Promise<{ ok: boolean; callSid?: string; error?: string }> {
     return ipcRenderer.invoke('vc:twilio-call', cfg);
   },
 
-  /** Persist Twilio config to main process (for auto-call scheduler). */
-  saveTwilioSettings(cfg: { sid: string; token: string; fromPhone: string; autoCallTime: string; toPhone: string }): Promise<void> {
+  /** Persist phone config to main process (for auto-call scheduler). */
+  saveTwilioSettings(cfg: { toPhone: string; autoCallTime: string; syncSid: string }): Promise<void> {
     return ipcRenderer.invoke('settings:save-twilio', cfg);
   },
 
@@ -286,8 +286,8 @@ export interface FocusBubbleAPI {
   updateTask(id: string, patch: Record<string, unknown>): Promise<void>;
   getDueTasks(): Promise<unknown[]>;
   onPlannerEvent(callback: (e: { type: string }) => void): () => void;
-  twilioCall(cfg: { sid: string; token: string; fromPhone: string; toPhone: string; tasks: unknown[] }): Promise<{ ok: boolean; callSid?: string; error?: string }>;
-  saveTwilioSettings(cfg: { sid: string; token: string; fromPhone: string; autoCallTime: string; toPhone: string }): Promise<void>;
+  twilioCall(cfg: { toPhone: string; tasks: unknown[] }): Promise<{ ok: boolean; callSid?: string; error?: string }>;
+  saveTwilioSettings(cfg: { toPhone: string; autoCallTime: string; syncSid: string }): Promise<void>;
   onAutoCallTrigger(callback: () => void): () => void;
   scheduleReminder(task: string, fireAtMs: number, toPhone: string): Promise<{ id: string }>;
   onAdHocReminder(callback: (r: { id: string; task: string }) => void): () => void;

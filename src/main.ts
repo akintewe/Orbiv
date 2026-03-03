@@ -140,52 +140,46 @@ function saveTasksToDisk(): void {
   } catch { /* non-critical */ }
 }
 
-// ─── Place a Twilio call directly from main process ───────────────────────────
-async function placeTwilioCall(twiml: string): Promise<void> {
-  if (!twilioConfig) { console.warn('FocusBubble: placeTwilioCall — no twilioConfig'); return; }
-  const { sid, token, fromPhone } = twilioConfig;
-  // toPhone lives in twilioConfig via saveTwilioSettings; we store it there when renderer saves settings
-  const toPhone = (twilioConfig as TwilioConfig & { toPhone?: string }).toPhone;
-  if (!toPhone) { console.warn('FocusBubble: placeTwilioCall — no toPhone'); return; }
+// ─── Place a Twilio call via Orbiv backend ────────────────────────────────────
+async function placeTwilioCall(tasks: DailyTask[]): Promise<void> {
+  if (!twilioConfig?.toPhone) { console.warn('FocusBubble: placeTwilioCall — no toPhone'); return; }
   try {
     const resp = await axios.post(
-      `https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls.json`,
-      new URLSearchParams({ To: toPhone, From: fromPhone, Twiml: twiml }),
-      { auth: { username: sid, password: token }, headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15_000 }
+      ORBIV_CALL_ENDPOINT,
+      new URLSearchParams({
+        toPhone: twilioConfig.toPhone,
+        tasks: JSON.stringify(tasks),
+        syncSid: twilioConfig.syncSid ?? '',
+      }),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15_000 }
     );
-    console.log(`FocusBubble: call placed — SID ${(resp.data as { sid?: string }).sid}`);
+    console.log(`FocusBubble: call placed — SID ${(resp.data as { callSid?: string }).callSid}`);
   } catch (err) {
     console.error('FocusBubble: Twilio call failed —', err instanceof Error ? err.message : err);
   }
 }
 
 // ─── Twilio Sync polling — marks tasks done when user presses 1 on phone ─────
+// Polls the Orbiv backend (which has Twilio credentials) to check for done tasks
 function startSyncPolling(): void {
   setInterval(async () => {
-    if (!twilioConfig?.syncSid || !twilioConfig.sid || !twilioConfig.token) return;
-    const { sid, token, syncSid } = twilioConfig;
+    if (!twilioConfig?.syncSid || !twilioConfig.toPhone) return;
     const pending = dailyTasks.filter(t => !t.completed);
     if (pending.length === 0) return;
     for (const task of pending) {
       try {
         const resp = await axios.get(
-          `https://sync.twilio.com/v1/Services/${syncSid}/Documents/done-${task.id}`,
-          { auth: { username: sid, password: token }, timeout: 8_000 }
+          `https://orbivservice-2647.twil.io/check-done?taskId=${encodeURIComponent(task.id)}&syncSid=${encodeURIComponent(twilioConfig.syncSid)}`,
+          { timeout: 8_000 }
         );
-        const done = (resp.data as { data?: { done?: boolean } }).data?.done;
+        const done = (resp.data as { done?: boolean }).done;
         if (done) {
           task.completed = true;
           saveTasksToDisk();
           console.log(`FocusBubble: Sync — task marked done via phone: "${task.title}"`);
-          // Notify renderer so UI updates
           if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('planner:task-done-via-phone', { id: task.id });
           }
-          // Clean up the Sync document
-          await axios.delete(
-            `https://sync.twilio.com/v1/Services/${syncSid}/Documents/done-${task.id}`,
-            { auth: { username: sid, password: token }, timeout: 8_000 }
-          ).catch(() => {});
         }
       } catch { /* document doesn't exist yet — that's fine */ }
     }
@@ -228,13 +222,8 @@ function startDailyPlannerCheck(): void {
           const pending = dailyTasks.filter(t => !t.completed);
           if (pending.length > 0) {
             periodicCallHoursFired.push(h);
-            const taskLines = pending.map((t, i) =>
-              `Task ${i + 1}: ${t.title}${t.dueTime ? `, due at ${t.dueTime}` : ''}.`
-            ).join(' ').replace(/&/g, 'and').replace(/[<>]/g, '').replace(/[^\x20-\x7E]/g, '');
-            const count = pending.length;
-            const twiml = `<Response><Say>Hi! Orbiv check-in. You still have ${count} pending ${count === 1 ? 'task' : 'tasks'}: ${taskLines} Keep it up!</Say></Response>`;
             console.log(`FocusBubble: periodic check-in call at ${h}:00`);
-            placeTwilioCall(twiml);
+            placeTwilioCall(pending);
           }
         }
       }
@@ -245,27 +234,21 @@ function startDailyPlannerCheck(): void {
       if (!r.fired && now >= r.fireAtMs) {
         r.fired = true;
         console.log(`FocusBubble: firing ad-hoc reminder — "${r.task}"`);
-        // Call Twilio directly from main — works even if UI panel is closed
-        if (twilioConfig) {
-          const { sid, token, fromPhone } = twilioConfig;
-          const toPhone = r.toPhone;
-          if (toPhone) {
-            const safeTask = r.task.replace(/&/g, 'and').replace(/[<>]/g, '').replace(/—|–/g, ', ').replace(/[^\x20-\x7E]/g, '').trim();
-            const twiml = `<Response><Say>Hi! This is Orbiv. This is your reminder to ${safeTask}. Have a great day!</Say></Response>`;
-            axios.post(
-              `https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls.json`,
-              new URLSearchParams({ To: toPhone, From: fromPhone, Twiml: twiml }),
-              { auth: { username: sid, password: token }, headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15_000 }
-            ).then(resp => {
-              console.log(`FocusBubble: ad-hoc reminder call placed — SID ${(resp.data as { sid?: string }).sid}`);
-            }).catch(err => {
-              console.error('FocusBubble: ad-hoc reminder call failed —', err instanceof Error ? err.message : err);
-            });
-          } else {
-            console.warn('FocusBubble: ad-hoc reminder has no toPhone — skipping call');
-          }
+        // Call via Orbiv backend — works even if UI panel is closed
+        const toPhone = r.toPhone || twilioConfig?.toPhone;
+        if (toPhone) {
+          const safeTask = r.task.replace(/&/g, 'and').replace(/[<>]/g, '').replace(/—|–/g, ', ').replace(/[^\x20-\x7E]/g, '').trim();
+          axios.post(
+            ORBIV_CALL_ENDPOINT,
+            new URLSearchParams({ toPhone, tasks: JSON.stringify([{ id: r.id, title: `Reminder: ${safeTask}`, completed: false }]), syncSid: '' }),
+            { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15_000 }
+          ).then(resp => {
+            console.log(`FocusBubble: ad-hoc reminder call placed — SID ${(resp.data as { callSid?: string }).callSid}`);
+          }).catch(err => {
+            console.error('FocusBubble: ad-hoc reminder call failed —', err instanceof Error ? err.message : err);
+          });
         } else {
-          console.warn('FocusBubble: ad-hoc reminder fired but no twilioConfig — skipping call');
+          console.warn('FocusBubble: ad-hoc reminder fired but no toPhone — skipping call');
         }
         // Still notify renderer so it can show an on-screen indicator
         mainWindow.webContents.send('planner:adhoc-reminder', { id: r.id, task: r.task });
@@ -876,7 +859,8 @@ ipcMain.handle('planner:schedule-reminder', (_e, { task, fireAtMs, toPhone }: { 
 });
 
 // ─── Twilio config (in-memory for scheduler) ─────────────────────────────────
-interface TwilioConfig { sid: string; token: string; fromPhone: string; autoCallTime: string; toPhone: string; webhookUrl: string; syncSid: string; }
+const ORBIV_CALL_ENDPOINT = 'https://orbivservice-2647.twil.io/call-user';
+interface TwilioConfig { toPhone: string; autoCallTime: string; syncSid: string; }
 let twilioConfig: TwilioConfig | null = null;
 
 ipcMain.handle('settings:save-twilio', (_e, cfg: TwilioConfig): void => {
@@ -884,62 +868,23 @@ ipcMain.handle('settings:save-twilio', (_e, cfg: TwilioConfig): void => {
   console.log(`FocusBubble: Twilio config saved — toPhone: ${cfg.toPhone}, autoCallTime: ${cfg.autoCallTime}`);
 });
 
-// ─── IPC: Twilio outbound call ────────────────────────────────────────────────
-ipcMain.handle('vc:twilio-call', async (_e, { sid, token, fromPhone, toPhone, tasks }: {
-  sid: string; token: string; fromPhone: string; toPhone: string; tasks: DailyTask[];
+// ─── IPC: Twilio outbound call (via Orbiv backend — no credentials in app) ────
+ipcMain.handle('vc:twilio-call', async (_e, { toPhone, tasks }: {
+  toPhone: string; tasks: DailyTask[];
 }): Promise<{ ok: boolean; callSid?: string; error?: string }> => {
   try {
-    const pending = tasks.filter(t => !t.completed);
-    const count = pending.length;
-    const taskLines = pending.map((t, i) =>
-      `Task ${i + 1}: ${t.title}${t.dueTime ? `, due at ${t.dueTime}` : ''}.`
-    ).join(' ');
-
-    // Sanitise helper
-    const sanitise = (s: string) => s
-      .replace(/&/g, 'and').replace(/[<>]/g, '').replace(/[""]/g, '"')
-      .replace(/[''`]/g, "'").replace(/—|–/g, ', ').replace(/[^\x20-\x7E]/g, '').trim();
-
-    const webhookUrl = twilioConfig?.webhookUrl ?? '';
-    const syncSid    = twilioConfig?.syncSid    ?? '';
-
-    let callParams: Record<string, string>;
-
-    if (webhookUrl && count > 0) {
-      // ── Interactive mode: Gather keypresses via webhook ────────────────────
-      // Encode tasks as JSON in the URL so the Function knows what to read
-      const tasksEncoded = encodeURIComponent(JSON.stringify(
-        pending.map(t => ({ id: t.id, title: sanitise(t.title) }))
-      ));
-      const firstTask = pending[0];
-      // & in XML attributes must be &amp; — build URL params separately
-      const gatherParams = [
-        `tasks=${tasksEncoded}`,
-        `taskIndex=0`,
-        `taskId=${encodeURIComponent(firstTask.id)}`,
-        `syncSid=${encodeURIComponent(syncSid)}`,
-      ].join('&amp;');
-      const gatherUrl = `https://${webhookUrl}/gather?${gatherParams}`;
-      const twiml = `<Response><Say>Hi! This is Orbiv. You have ${count} pending ${count === 1 ? 'task' : 'tasks'}.</Say><Gather numDigits="1" action="${gatherUrl}" timeout="10"><Say>Task 1: ${sanitise(firstTask.title)}. Press 1 if completed, press 2 to skip.</Say></Gather><Say>No input received. Check back in the app. Goodbye.</Say></Response>`;
-      console.log('FocusBubble: interactive TwiML (Gather)');
-      callParams = { To: toPhone, From: fromPhone, Twiml: twiml };
-    } else {
-      // ── Simple mode: just read tasks aloud ────────────────────────────────
-      const bodyText = count === 0
-        ? `Hi! This is Orbiv. You have no pending tasks. Great work today!`
-        : `Hi! This is Orbiv. You have ${count} pending ${count === 1 ? 'task' : 'tasks'} today. ${sanitise(taskLines)} Have a productive day!`;
-      console.log('FocusBubble: simple TwiML');
-      callParams = { To: toPhone, From: fromPhone, Twiml: `<Response><Say>${bodyText}</Say></Response>` };
-    }
-
     const resp = await axios.post(
-      `https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls.json`,
-      new URLSearchParams(callParams),
-      { auth: { username: sid, password: token }, headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15_000 }
+      ORBIV_CALL_ENDPOINT,
+      new URLSearchParams({
+        toPhone,
+        tasks: JSON.stringify(tasks),
+        syncSid: twilioConfig?.syncSid ?? '',
+      }),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15_000 }
     );
-    const callSid = (resp.data as { sid?: string }).sid ?? 'unknown';
-    console.log(`FocusBubble: Twilio call placed — SID ${callSid}`);
-    return { ok: true, callSid };
+    const data = resp.data as { ok: boolean; callSid?: string; error?: string };
+    console.log(`FocusBubble: call placed via backend — SID ${data.callSid ?? 'unknown'}`);
+    return data;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('FocusBubble: Twilio call failed —', msg);
