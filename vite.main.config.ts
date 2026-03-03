@@ -7,9 +7,6 @@ export default defineConfig({
       external: [
         // Electron APIs — provided by the Electron runtime, never bundle
         'electron',
-        // googleapis and its transitive deps use native Node modules — keep external
-        'googleapis',
-        'google-auth-library',
       ],
     },
   },
