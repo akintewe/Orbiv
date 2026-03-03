@@ -15,6 +15,18 @@ const config: ForgeConfig = {
     appBundleId: 'com.akintewe.orbiv',
     appCategoryType: 'public.app-category.productivity',
     icon: 'assets/icon',
+    ignore: (path: string) => {
+      // Always include node_modules
+      if (path.startsWith('/node_modules')) return false;
+      // Always include .vite build output
+      if (path.startsWith('/.vite')) return false;
+      // Exclude source files not needed at runtime
+      if (path.startsWith('/src/')) return true;
+      if (path.startsWith('/scripts/')) return true;
+      if (path.startsWith('/assets/icon.iconset')) return true;
+      if (path === '/assets/icon_source.png') return true;
+      return false;
+    },
   },
   rebuildConfig: {},
   makers: [
