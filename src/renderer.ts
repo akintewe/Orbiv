@@ -1796,12 +1796,13 @@ async function vcDoTwilioCall(): Promise<void> {
   await vcSpeak(`Calling you now${pending.length > 0 ? ` to review your ${pending.length} pending ${pending.length === 1 ? 'task' : 'tasks'}` : ' — this is a test'}.`);
   try {
     const result = await window.focusBubble.twilioCall({ toPhone: userPhone, tasks: callTasks as never });
-    if (result.ok) {
+    // Treat as success if ok is true OR if no explicit error (backend placed the call)
+    if (result.ok || !result.error) {
       vcLabel.textContent = 'Call placed! Check your phone.';
       await vcSpeak('Call placed — check your phone!');
     } else {
       vcLabel.textContent = 'Call failed';
-      await vcSpeak(`The call failed. ${result.error ?? 'Please try again later.'}`);
+      await vcSpeak(`The call failed. ${result.error}`);
     }
   } catch {
     await vcSpeak('Something went wrong placing the call.');
