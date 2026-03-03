@@ -1122,25 +1122,37 @@ ipcMain.on('file:open', (_event, filePath: string) => {
  * Returns { ok, filePath, dataUrl } on success or { ok: false, error } on failure.
  */
 ipcMain.handle('vc:screenshot', async (): Promise<{ ok: boolean; filePath?: string; dataUrl?: string; error?: string }> => {
+  const { execSync } = await import('node:child_process');
+  const ts      = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const outPath = path.join(os.homedir(), 'Downloads', `screenshot-${ts}.png`);
+
   try {
-    const sources = await desktopCapturer.getSources({
-      types: ['screen'],
-      thumbnailSize: { width: 1920, height: 1080 },
-    });
+    // Use macOS native screencapture — always works if Screen Recording permission granted.
+    // -x = no sound, -t png = format
+    execSync(`screencapture -x -t png "${outPath}"`, { timeout: 8000 });
 
-    const primary = sources[0];
-    if (!primary) return { ok: false, error: 'No screen source found' };
-
-    const png = primary.thumbnail.toPNG();
-    const ts  = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const outPath = path.join(os.homedir(), 'Downloads', `screenshot-${ts}.png`);
-    fs.writeFileSync(outPath, png);
-
-    // Return a data URL so the renderer can show a preview without a file:// path
+    if (!fs.existsSync(outPath)) return { ok: false, error: 'screencapture produced no file' };
+    const png    = fs.readFileSync(outPath);
+    if (png.length < 1000) return { ok: false, error: 'Screenshot appears empty — check Screen Recording permission in System Settings → Privacy & Security' };
     const dataUrl = `data:image/png;base64,${png.toString('base64')}`;
     return { ok: true, filePath: outPath, dataUrl };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    // Fallback to desktopCapturer if screencapture fails
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: { width: 3840, height: 2160 },
+      });
+      const primary = sources[0];
+      if (!primary) return { ok: false, error: 'No screen source found' };
+      const png = primary.thumbnail.toPNG();
+      if (png.length < 1000) return { ok: false, error: 'Screenshot empty — grant Screen Recording permission in System Settings → Privacy & Security → Screen Recording' };
+      fs.writeFileSync(outPath, png);
+      const dataUrl = `data:image/png;base64,${png.toString('base64')}`;
+      return { ok: true, filePath: outPath, dataUrl };
+    } catch (err2) {
+      return { ok: false, error: err2 instanceof Error ? err2.message : String(err2) };
+    }
   }
 });
 

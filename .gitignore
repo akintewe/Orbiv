@@ -99,3 +99,8 @@ token.json
 
 # Demo video (too large for git — hosted as GitHub release asset)
 *.mp4
+
+# Raw source images (processed versions in assets/ are committed)
+e4597388-13e7-4fa1-8b6d-abde3607b119.jpg
+assets/icon_source.png
+assets/icon.iconset/
