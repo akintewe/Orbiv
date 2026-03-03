@@ -1244,8 +1244,13 @@ ipcMain.on('vc:speak-stop', () => {
  */
 ipcMain.handle('vc:classify', async (_event, transcript: string): Promise<Record<string, unknown>> => {
   const apiKey = process.env.AIRIA_API_KEY;
+
+  // Always try local first — it's instant. Only call Airia for unknown intents.
+  const local = classifyLocally(transcript);
+  if (local.intent !== 'unknown') return local;
+
   if (!apiKey?.trim() || airiaCreditsExhausted) {
-    return classifyLocally(transcript);
+    return local;
   }
 
   try {
