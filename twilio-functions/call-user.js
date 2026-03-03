@@ -55,7 +55,7 @@ exports.handler = async function (context, event, callback) {
       `syncSid=${encodeURIComponent(syncSid)}`,
     ].join('&amp;');
     const gatherUrl = `https://${context.DOMAIN_NAME}/task-response?${gatherParams}`;
-    twiml = `<Response><Say>Hi! This is Orbiv, your focus assistant. You have ${count} pending ${count === 1 ? 'task' : 'tasks'}.</Say><Gather numDigits="1" action="${gatherUrl}" timeout="10"><Say>Task 1: ${sanitise(firstTask.title)}. Press 1 if completed, press 2 to skip.</Say></Gather><Say>No input received. Check the Orbiv app. Goodbye!</Say></Response>`;
+    twiml = `<Response><Say voice="Polly.Joanna">Hi! This is Orbiv, your focus assistant. You have ${count} pending ${count === 1 ? 'task' : 'tasks'}.</Say><Gather numDigits="1" action="${gatherUrl}" timeout="10"><Say voice="Polly.Joanna">Task 1: ${sanitise(firstTask.title)}. Press 1 if completed, press 2 to skip.</Say></Gather><Say voice="Polly.Joanna">No input received. Check the Orbiv app. Goodbye!</Say></Response>`;
   } else {
     // Simple mode — just read tasks aloud
     const taskLines = pending.map((t, i) =>
@@ -64,7 +64,7 @@ exports.handler = async function (context, event, callback) {
     const bodyText = count === 0
       ? `Hi! This is Orbiv. You have no pending tasks. Great work today!`
       : `Hi! This is Orbiv. You have ${count} pending ${count === 1 ? 'task' : 'tasks'} today. ${taskLines} Have a productive day!`;
-    twiml = `<Response><Say>${bodyText}</Say></Response>`;
+    twiml = `<Response><Say voice="Polly.Joanna">${bodyText}</Say></Response>`;
   }
 
   try {

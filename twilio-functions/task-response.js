@@ -59,7 +59,7 @@ exports.handler = async function (context, event, callback) {
   if (!nextTask) {
     // No more tasks
     const doneMsg = digits === '1' ? 'Marked as done. ' : digits === '2' ? 'Skipped. ' : '';
-    twiml = `<Response><Say>${doneMsg}That's all your tasks. Have a great day! Goodbye.</Say></Response>`;
+    twiml = `<Response><Say voice="Polly.Joanna">${doneMsg}That's all your tasks. Have a great day! Goodbye.</Say></Response>`;
   } else {
     const doneMsg = digits === '1' ? 'Marked as done. ' : digits === '2' ? 'Skipped. ' : '';
     const tasksEncoded = encodeURIComponent(JSON.stringify(tasks));
@@ -70,7 +70,7 @@ exports.handler = async function (context, event, callback) {
       `syncSid=${encodeURIComponent(syncSid)}`,
     ].join('&amp;');
     const gatherUrl = `https://${context.DOMAIN_NAME}/task-response?${gatherParams}`;
-    twiml = `<Response><Say>${doneMsg}Task ${nextIndex + 1}: ${sanitise(nextTask.title)}.</Say><Gather numDigits="1" action="${gatherUrl}" timeout="10"><Say>Press 1 if completed, press 2 to skip.</Say></Gather><Say>No input received. Goodbye!</Say></Response>`;
+    twiml = `<Response><Say voice="Polly.Joanna">${doneMsg}Task ${nextIndex + 1}: ${sanitise(nextTask.title)}.</Say><Gather numDigits="1" action="${gatherUrl}" timeout="10"><Say voice="Polly.Joanna">Press 1 if completed, press 2 to skip.</Say></Gather><Say voice="Polly.Joanna">No input received. Goodbye!</Say></Response>`;
   }
 
   response.setBody(twiml);
