@@ -1,6 +1,6 @@
 /**
- * Orbiv — gather.js
- * Twilio Function: POST /gather
+ * Orbiv — task-response.js
+ * Twilio Function: POST /task-response
  *
  * Called by Twilio after the user presses a key during an interactive call.
  * Handles:
@@ -69,7 +69,7 @@ exports.handler = async function (context, event, callback) {
       `taskId=${encodeURIComponent(nextTask.id)}`,
       `syncSid=${encodeURIComponent(syncSid)}`,
     ].join('&amp;');
-    const gatherUrl = `https://${context.DOMAIN_NAME}/gather?${gatherParams}`;
+    const gatherUrl = `https://${context.DOMAIN_NAME}/task-response?${gatherParams}`;
     twiml = `<Response><Say>${doneMsg}Task ${nextIndex + 1}: ${sanitise(nextTask.title)}.</Say><Gather numDigits="1" action="${gatherUrl}" timeout="10"><Say>Press 1 if completed, press 2 to skip.</Say></Gather><Say>No input received. Goodbye!</Say></Response>`;
   }
 

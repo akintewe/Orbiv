@@ -43,7 +43,7 @@ exports.handler = async function (context, event, callback) {
   let twiml;
 
   if (syncSid && count > 0) {
-    // Interactive mode — Gather keypresses, post back to /gather
+    // Interactive mode — Gather keypresses, post back to /task-response
     const tasksEncoded = encodeURIComponent(JSON.stringify(
       pending.map(t => ({ id: t.id, title: sanitise(t.title) }))
     ));
@@ -54,7 +54,7 @@ exports.handler = async function (context, event, callback) {
       `taskId=${encodeURIComponent(firstTask.id)}`,
       `syncSid=${encodeURIComponent(syncSid)}`,
     ].join('&amp;');
-    const gatherUrl = `https://${context.DOMAIN_NAME}/gather?${gatherParams}`;
+    const gatherUrl = `https://${context.DOMAIN_NAME}/task-response?${gatherParams}`;
     twiml = `<Response><Say>Hi! This is Orbiv, your focus assistant. You have ${count} pending ${count === 1 ? 'task' : 'tasks'}.</Say><Gather numDigits="1" action="${gatherUrl}" timeout="10"><Say>Task 1: ${sanitise(firstTask.title)}. Press 1 if completed, press 2 to skip.</Say></Gather><Say>No input received. Check the Orbiv app. Goodbye!</Say></Response>`;
   } else {
     // Simple mode — just read tasks aloud
