@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "Orbiv — AI Focus Assistant",
+  "version": "1.0.0",
+  "description": "Voice-powered AI assistant with notifications, daily planner, and page-aware commands — right in your browser.",
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "notifications",
+    "tabs",
+    "activeTab",
+    "tabCapture",
+    "identity",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://api.elevenlabs.io/*"
+  ],
+  "side_panel": {
+    "default_path": "sidepanel/sidepanel.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Open Orbiv",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

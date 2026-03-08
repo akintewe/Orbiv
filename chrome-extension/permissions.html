@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Orbiv — Enable Microphone</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #080d1c;
+      color: #e2e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    .card {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 16px;
+      padding: 40px;
+      max-width: 420px;
+      text-align: center;
+    }
+    .icon { font-size: 48px; margin-bottom: 16px; }
+    h1 { font-size: 20px; color: #67e8f9; margin-bottom: 12px; }
+    p { font-size: 14px; color: #94a3b8; line-height: 1.6; margin-bottom: 24px; }
+    button {
+      padding: 12px 32px;
+      background: rgba(103,232,249,0.12);
+      border: 1px solid rgba(103,232,249,0.3);
+      border-radius: 10px;
+      color: #67e8f9;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    button:hover { background: rgba(103,232,249,0.2); }
+    .status {
+      margin-top: 20px;
+      font-size: 14px;
+      min-height: 20px;
+    }
+    .status.success { color: #22c55e; }
+    .status.error { color: #f43f5e; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">&#127908;</div>
+    <h1>Enable Microphone for Orbiv</h1>
+    <p>Click the button below, then click <strong>"Allow"</strong> when Chrome asks for microphone permission. This only needs to be done once.</p>
+    <button id="btn-allow">Allow Microphone Access</button>
+    <div id="status" class="status"></div>
+  </div>
+  <script src="permissions.js"></script>
+</body>
+</html>

@@ -104,3 +104,7 @@ token.json
 e4597388-13e7-4fa1-8b6d-abde3607b119.jpg
 assets/icon_source.png
 assets/icon.iconset/
+
+# Claude
+.claude/
+CLAUDE.md
