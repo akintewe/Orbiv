@@ -29,15 +29,66 @@ async function restoreReminders() {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// TASK CHECK-IN ALARMS — fires at 9am, 11am, 1pm, 3pm, 5pm
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function scheduleNextCheckin() {
+  chrome.alarms.clear('orbiv-checkin', () => {
+    const now = new Date();
+    const currentHour = now.getHours();
+    const currentMin = now.getMinutes();
+    const checkInHours = [9, 11, 13, 15, 17];
+
+    // Find the next check-in hour that hasn't fired yet (allow exact hour if within first minute)
+    const nextHour = checkInHours.find(h => h > currentHour || (h === currentHour && currentMin === 0));
+
+    const target = new Date(now);
+    if (nextHour === undefined) {
+      // All done today — schedule 9am tomorrow
+      target.setDate(target.getDate() + 1);
+      target.setHours(9, 0, 0, 0);
+    } else {
+      target.setHours(nextHour, 0, 0, 0);
+    }
+
+    chrome.alarms.create('orbiv-checkin', { when: target.getTime() });
+  });
+}
+
 // Run on install/update and on browser startup
-chrome.runtime.onInstalled.addListener(restoreReminders);
-chrome.runtime.onStartup.addListener(restoreReminders);
+chrome.runtime.onInstalled.addListener(() => { restoreReminders(); scheduleNextCheckin(); });
+chrome.runtime.onStartup.addListener(() => { restoreReminders(); scheduleNextCheckin(); });
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // REMINDERS — chrome.alarms fires, we show a chrome.notification
 // ═══════════════════════════════════════════════════════════════════════════════
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  // ── Task check-in ──────────────────────────────────────────────────────────
+  if (alarm.name === 'orbiv-checkin') {
+    const today = new Date().toISOString().slice(0, 10);
+    const data = await chrome.storage.sync.get('orbiv-planner');
+    const saved = data['orbiv-planner'];
+    if (saved?.date === today) {
+      const pending = (saved.tasks || []).filter(t => !t.completed);
+      if (pending.length > 0) {
+        const preview = pending.slice(0, 2).map(t => t.title).join(', ') + (pending.length > 2 ? '...' : '');
+        chrome.notifications.create(`orbiv-checkin-${Date.now()}`, {
+          type: 'basic',
+          iconUrl: 'icons/icon128.png',
+          title: 'Orbiv Task Check-in',
+          message: `${pending.length} pending task${pending.length > 1 ? 's' : ''}: ${preview}`,
+          priority: 1,
+          requireInteraction: false,
+        });
+        chrome.runtime.sendMessage({ type: 'checkin-fired', pending }).catch(() => {});
+      }
+    }
+    scheduleNextCheckin();
+    return;
+  }
+
   // Alarm names are prefixed with "reminder:" followed by the task text
   if (alarm.name.startsWith('reminder:')) {
     const task = alarm.name.slice('reminder:'.length);

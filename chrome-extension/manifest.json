@@ -11,10 +11,13 @@
     "activeTab",
     "tabCapture",
     "identity",
-    "alarms"
+    "alarms",
+    "microphone"
   ],
   "host_permissions": [
-    "https://api.elevenlabs.io/*"
+    "<all_urls>",
+    "https://api.elevenlabs.io/*",
+    "https://api.airia.ai/*"
   ],
   "side_panel": {
     "default_path": "sidepanel/sidepanel.html"

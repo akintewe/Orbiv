@@ -23,6 +23,9 @@
           <svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path d="M10 2a6 6 0 00-6 6v3.586l-.707.707A1 1 0 004 14h12a1 1 0 00.707-1.707L16 11.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-3-3h6a3 3 0 01-3 3z"/></svg>
           <span id="notif-badge" hidden>0</span>
         </button>
+        <button id="btn-meeting" title="Meeting Recorder" aria-label="Meeting Recorder">
+          <svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><circle cx="10" cy="10" r="5"/><path d="M10 1a9 9 0 100 18A9 9 0 0010 1zm0 16a7 7 0 110-14 7 7 0 010 14z" opacity="0.4"/></svg>
+        </button>
         <button id="btn-settings" title="Settings" aria-label="Settings">
           <svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/></svg>
         </button>
@@ -144,7 +147,12 @@
     <div id="notifs-panel" hidden>
       <div id="notifs-header">
         <h2>Notifications</h2>
-        <button id="notifs-back" aria-label="Back">&larr;</button>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button id="notifs-clear" title="Clear all" aria-label="Clear all notifications">
+            <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+          </button>
+          <button id="notifs-back" aria-label="Back">&larr;</button>
+        </div>
       </div>
       <div id="notifs-list"></div>
       <div id="notifs-empty">All caught up — enjoy the calm.</div>
@@ -163,6 +171,22 @@
       </div>
     </div>
 
+    <!-- ═══ MEETING PANEL ═══ -->
+    <div id="meeting-panel" hidden>
+      <div id="meeting-header">
+        <h2>Meeting Transcript</h2>
+        <button id="meeting-back" aria-label="Back">&larr;</button>
+      </div>
+      <div id="meeting-controls">
+        <p id="meeting-hint">Captures everything you say as a timestamped text transcript.</p>
+        <p id="meeting-status">Ready to record.</p>
+        <button id="meeting-start-btn" class="btn-primary">Start Transcript</button>
+        <button id="meeting-stop-btn" class="btn-danger" hidden>Stop Recording</button>
+        <button id="meeting-export-btn" class="btn-secondary" hidden>Export .txt</button>
+      </div>
+      <pre id="meeting-transcript"></pre>
+    </div>
+
     <!-- ═══ SETTINGS PANEL ═══ -->
     <div id="settings-panel" hidden>
       <div id="settings-header">
@@ -173,6 +197,10 @@
         <div class="settings-row">
           <label for="setting-elevenlabs-key">ElevenLabs API Key</label>
           <input type="password" id="setting-elevenlabs-key" placeholder="sk_..." autocomplete="off"/>
+        </div>
+        <div class="settings-row">
+          <label for="setting-airia-key">Airia API Key (for smarter intent recognition)</label>
+          <input type="password" id="setting-airia-key" placeholder="Your Airia key" autocomplete="off"/>
         </div>
         <div class="settings-row">
           <label for="setting-voice">Voice</label>

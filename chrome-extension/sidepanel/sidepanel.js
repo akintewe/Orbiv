@@ -4,13 +4,16 @@
  * Features:
  * - Morphing liquid blob (simplex noise, same as Electron app)
  * - Voice commands via Web Speech API
- * - Local intent classification (regex heuristics)
+ * - Local intent classification (regex heuristics) + Airia AI fallback
  * - Daily planner (chrome.storage.sync)
  * - Notification hub
  * - Page-aware commands (summarize, extract)
  * - Tab management (find, close tabs)
  * - TTS via browser SpeechSynthesis or ElevenLabs
  * - Screenshot capture via chrome.tabs.captureVisibleTab
+ * - Meeting recorder with timestamped transcript export
+ * - Morning greeting on first open (5am–11am)
+ * - Hourly task check-in notifications (background)
  */
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -112,6 +115,7 @@ const plannerInput  = document.getElementById('planner-input');
 const plannerAddBtn = document.getElementById('planner-add');
 
 const settingsPanel = document.getElementById('settings-panel');
+const meetingPanel  = document.getElementById('meeting-panel');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // BLOB MORPH LOOP
@@ -191,6 +195,7 @@ let appSettings = {
   elevenLabsKey: '',
   voiceMode: 'browser',
   sttMode: 'browser',
+  airiaKey: '',
 };
 
 async function loadSettings() {
@@ -202,12 +207,15 @@ async function loadSettings() {
   document.getElementById('setting-elevenlabs-key').value = appSettings.elevenLabsKey || '';
   document.getElementById('setting-voice').value = appSettings.voiceMode || 'browser';
   document.getElementById('setting-stt').value = appSettings.sttMode || 'browser';
+  document.getElementById('setting-airia-key').value = appSettings.airiaKey || '';
 }
 
 async function saveSettings() {
   appSettings.elevenLabsKey = document.getElementById('setting-elevenlabs-key').value.trim();
   appSettings.voiceMode = document.getElementById('setting-voice').value;
   appSettings.sttMode = document.getElementById('setting-stt').value;
+  appSettings.airiaKey = document.getElementById('setting-airia-key').value.trim();
+  if (appSettings.airiaKey) airiaCreditsExhausted = false; // reset on key change
 
   // Auto-switch to ElevenLabs if key is provided and voice is still on browser
   if (appSettings.elevenLabsKey && appSettings.voiceMode === 'browser') {
@@ -246,7 +254,33 @@ async function saveSettings() {
   settingsPanel.hidden = true;
 }
 
-loadSettings();
+loadSettings().then(checkMorningGreeting);
+
+async function checkMorningGreeting() {
+  const hour = new Date().getHours();
+  if (hour < 5 || hour >= 11) return; // Only 5am–11am
+
+  const today = new Date().toISOString().slice(0, 10);
+  const stored = await chrome.storage.local.get('orbiv-greeted');
+  if (stored['orbiv-greeted'] === today) return; // Already greeted today
+
+  await chrome.storage.local.set({ 'orbiv-greeted': today });
+
+  const greeting = hour < 9 ? 'Good early morning' : 'Good morning';
+  const plannerData = await chrome.storage.sync.get('orbiv-planner');
+  const saved = plannerData['orbiv-planner'];
+  const pending = (saved?.date === today ? (saved.tasks || []).filter(t => !t.completed) : []);
+
+  let msg = `${greeting}! I'm Orbiv, your focus assistant.`;
+  msg += pending.length > 0
+    ? ` You have ${pending.length} task${pending.length > 1 ? 's' : ''} on your planner today.`
+    : ` Your planner is clear — a great opportunity to plan your day!`;
+
+  showResponse(msg);
+  enterAlertState();
+  await speak(msg);
+  setTimeout(clearAlertState, 2000);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TTS
@@ -269,7 +303,7 @@ async function speak(text) {
         },
         body: JSON.stringify({
           text,
-          model_id: 'eleven_monolingual_v1',
+          model_id: 'eleven_multilingual_v2',
           voice_settings: { stability: 0.5, similarity_boost: 0.75 },
         }),
       });
@@ -308,6 +342,74 @@ async function speak(text) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// AIRIA INTENT FALLBACK
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const AIRIA_ENDPOINT = 'https://api.airia.ai/v2/PipelineExecution/d31d96dc-c7aa-4fcf-8c4a-cf2d27f74cf0';
+let airiaCreditsExhausted = false;
+
+async function classifyViaAiria(transcript) {
+  if (!appSettings.airiaKey?.trim() || airiaCreditsExhausted) return null;
+  try {
+    const body = {
+      userInput: JSON.stringify({
+        task: 'classify_voice_command',
+        transcript,
+        instructions: `You are the intent classifier for Orbiv, a voice assistant Chrome extension.
+Classify the transcript into exactly one intent. Respond with ONLY valid JSON (no markdown, no explanation).
+
+Possible intents:
+  { "intent": "summarize_page" }
+  { "intent": "extract_page" }
+  { "intent": "close_tabs", "query": "<tab title or url keyword>" }
+  { "intent": "find_tabs", "query": "<tab title or url keyword>" }
+  { "intent": "take_screenshot" }
+  { "intent": "read_notifications" }
+  { "intent": "open_planner" }
+  { "intent": "tell_time" }
+  { "intent": "tell_date" }
+  { "intent": "start_meeting" }
+  { "intent": "stop_meeting" }
+  { "intent": "open_urls", "urls": [{ "url": "<full url>", "name": "<site name>" }] }
+  { "intent": "web_search", "query": "<search terms>" }
+  { "intent": "set_reminder", "time": "<e.g. 3pm or 5 minutes>", "task": "<what to remind>", "relative": false }
+  { "intent": "greeting" }
+  { "intent": "joke" }
+  { "intent": "help" }
+  { "intent": "unknown", "query": "<original transcript>" }
+
+Transcript: "${transcript}"`,
+      }),
+      asyncOutput: false,
+    };
+    const resp = await fetch(AIRIA_ENDPOINT, {
+      method: 'POST',
+      headers: { 'X-API-KEY': appSettings.airiaKey, 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(12000),
+    });
+    if (resp.status === 401 || resp.status === 402 || resp.status === 403) {
+      airiaCreditsExhausted = true;
+      console.info('Orbiv: Airia credits exhausted — local classifier only.');
+      return null;
+    }
+    if (!resp.ok) return null;
+    let raw = await resp.json();
+    if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch { /* ok */ } }
+    const inner = raw?.result ?? raw?.output ?? raw;
+    if (typeof inner === 'string') {
+      try {
+        const stripped = inner.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+        return JSON.parse(stripped);
+      } catch { /* fall through */ }
+    }
+    if (typeof inner === 'object' && inner !== null && 'intent' in inner) return inner;
+  } catch (e) {
+    console.warn('Orbiv: Airia classify failed:', e);
+  }
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // STT — Web Speech API
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -316,6 +418,70 @@ let isListening = false;
 let micPermissionGranted = false;
 let _finalTranscript = '';
 let _processTimer = null;
+let pendingReminderTask = null; // set when user says "remind me to X" without a time
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MEETING RECORDER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let isMeetingActive = false;
+let meetingChunks = [];
+let meetingStartTime = null;
+
+function addMeetingChunk(text) {
+  const elapsed = Date.now() - meetingStartTime;
+  const mins = Math.floor(elapsed / 60000);
+  const secs = Math.floor((elapsed % 60000) / 1000);
+  const ts = `[${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}]`;
+  meetingChunks.push({ ts, text });
+  const el = document.getElementById('meeting-transcript');
+  if (el) { el.textContent = meetingChunks.map(c => `${c.ts} ${c.text}`).join('\n'); el.scrollTop = el.scrollHeight; }
+}
+
+function startMeeting() {
+  isMeetingActive = true;
+  meetingChunks = [];
+  meetingStartTime = Date.now();
+  meetingPanel.hidden = false;
+  document.getElementById('meeting-status').textContent = '● Recording transcript...';
+  document.getElementById('meeting-start-btn').hidden = true;
+  document.getElementById('meeting-stop-btn').hidden = false;
+  document.getElementById('meeting-export-btn').hidden = true;
+  document.getElementById('meeting-transcript').textContent = '';
+  enterAlertState();
+  showResponse('Transcript recording started — everything you say is being captured. Say "stop meeting" or click Stop when done.');
+  // Start mic immediately (don't wait for TTS — avoids missing speech)
+  startListening();
+  speak('Transcript recording started.');
+}
+
+function stopMeeting() {
+  isMeetingActive = false;
+  document.getElementById('meeting-status').textContent = `Stopped — ${meetingChunks.length} segment${meetingChunks.length !== 1 ? 's' : ''} captured.`;
+  document.getElementById('meeting-start-btn').hidden = false;
+  document.getElementById('meeting-stop-btn').hidden = true;
+  if (meetingChunks.length > 0) document.getElementById('meeting-export-btn').hidden = false;
+  clearAlertState();
+  stopListening();
+  showResponse(`Meeting ended — ${meetingChunks.length} chunk${meetingChunks.length !== 1 ? 's' : ''} recorded. Click Export to save.`);
+  speak('Meeting recording stopped.');
+}
+
+function exportMeetingNotes() {
+  if (meetingChunks.length === 0) { showResponse('No meeting content to export.'); return; }
+  const startStr = new Date(meetingStartTime).toLocaleString();
+  const durationMins = Math.round((Date.now() - meetingStartTime) / 60000);
+  let content = `Orbiv Meeting Notes\n===================\nDate: ${startStr}\nDuration: ${durationMins} min\n\nTranscript\n----------\n`;
+  for (const c of meetingChunks) content += `${c.ts} ${c.text}\n`;
+  const blob = new Blob([content], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `meeting-notes-${new Date().toISOString().slice(0, 10)}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showResponse('Meeting notes exported!');
+}
 
 function initRecognition() {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -347,12 +513,23 @@ function initRecognition() {
       vcLabel.classList.add('transcript');
     }
 
-    // When we get a final result, stop immediately and process
+    // When we get a final result, handle based on mode
     if (_finalTranscript.trim()) {
       const text = _finalTranscript.trim();
+      _finalTranscript = '';
       console.log('Orbiv STT final:', text);
-      stopListening();
-      processTranscript(text);
+
+      if (isMeetingActive) {
+        addMeetingChunk(text);
+        // Only "stop meeting" / "end meeting" breaks out of recording mode
+        if (/\b(stop|end|finish)\s+(the\s+)?(meeting|recording)\b/i.test(text)) {
+          stopMeeting();
+        }
+        // else: isListening stays true → onend auto-restarts recognition
+      } else {
+        stopListening();
+        processTranscript(text);
+      }
     }
   };
 
@@ -361,8 +538,19 @@ function initRecognition() {
     if (event.error === 'not-allowed') {
       stopListening();
       micPermissionGranted = false;
-      vcLabel.textContent = 'Mic setup needed — opening setup page...';
-      chrome.tabs.create({ url: chrome.runtime.getURL('permissions.html') });
+      vcLabel.textContent = 'Mic blocked — click here to grant access.';
+      vcLabel.classList.add('transcript');
+      // Try requesting mic permission inline so the browser shows the native prompt
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => {
+          stream.getTracks().forEach(t => t.stop());
+          micPermissionGranted = true;
+          vcLabel.textContent = 'Mic enabled! Click the orb or press Space.';
+          vcLabel.classList.remove('transcript');
+        })
+        .catch(() => {
+          vcLabel.textContent = 'Mic blocked — check Chrome site settings and reload.';
+        });
     } else if (event.error === 'no-speech') {
       // Don't stop — just keep listening
       vcLabel.textContent = 'Still listening... speak now.';
@@ -523,6 +711,32 @@ function classifyLocally(t) {
     return { intent: 'set_reminder', time, task };
   }
 
+  // ── Meeting recorder ───────────────────────────────────────────────────────
+  if (/\b(start|begin|record|open)\s+(a\s+)?(meeting|session|recording)\b/.test(s))
+    return { intent: 'start_meeting' };
+
+  if (/\b(stop|end|finish|close|done\s+with)\s+(the\s+)?(meeting|session|recording)\b/.test(s))
+    return { intent: 'stop_meeting' };
+
+  // Pattern: "remind me to eat by/at 12am" / "remind me to call John at 3pm"
+  const taskThenAbsTime = s.match(/\b(?:remind|reminder|notify|alert|tell)\s*(?:me)?\s*(?:to|about|that)\s+(.+?)\s+(?:at|by|for)\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*$/i);
+  if (taskThenAbsTime) {
+    return { intent: 'set_reminder', time: taskThenAbsTime[2].trim(), task: taskThenAbsTime[1].trim() };
+  }
+
+  // Pattern: "remind me to eat in 5 minutes" — task before relative time
+  const taskThenRelTime = s.match(new RegExp('\\b(?:remind|reminder|notify|alert|tell)\\s*(?:me)?\\s*(?:to|about|that)\\s+(.+?)\\s+in\\s+' + _NUM + '\\s*' + _UNIT + '\\s*$', 'i'));
+  if (taskThenRelTime && _parseNum(taskThenRelTime[2])) {
+    return { intent: 'set_reminder', time: `${_parseNum(taskThenRelTime[2])} ${taskThenRelTime[3]}`, task: taskThenRelTime[1].trim(), relative: true };
+  }
+
+  // Catch-all: "remind me to X" with no time — ask for time
+  const noTimeReminder = s.match(/\b(?:remind|reminder|notify|alert|tell)\s*(?:me)?\s*(?:to|about|that)\s+(.+)/i)
+    || s.match(/\b(?:set\s*a?\s*(?:reminder|alarm))\s*(?:to|about|for)?\s+(.+)/i);
+  if (noTimeReminder) {
+    return { intent: 'set_reminder', task: noTimeReminder[1].trim(), time: null };
+  }
+
   // ── Page-aware commands ────────────────────────────────────────────────────
   if (/\b(summarize?|summary|sum\s*up|tldr|what('?s|\s+is)\s+(this|the)\s+(page|article|site|website|tab))\b/.test(s))
     return { intent: 'summarize_page' };
@@ -548,7 +762,11 @@ function classifyLocally(t) {
     return { intent: 'take_screenshot' };
 
   // ── Notifications ──────────────────────────────────────────────────────────
-  if (/\b(notification|notifications|unread|what('?s|\s*is)\s*(new|up)|catch\s*me\s*up)\b/.test(s))
+  if (/\b(clear|delete|dismiss|remove|wipe|clean)\b.{0,20}\b(notif|notifs|notifications?|alerts?|all)\b/.test(s)
+    || /\b(notif|notifs|notifications?|alerts?)\b.{0,20}\b(clear|delete|dismiss|remove|wipe|clean|all)\b/.test(s))
+    return { intent: 'clear_notifications' };
+
+  if (/\b(notification|notifications?|notifs?|unread|what('?s|\s*is)\s*(new|up)|catch\s*me\s*up)\b/.test(s))
     return { intent: 'read_notifications' };
 
   // ── Planner ────────────────────────────────────────────────────────────────
@@ -632,7 +850,68 @@ async function processTranscript(transcript) {
   noiseStep = 0.022;
   displacementMult = 2.8;
 
-  const intent = classifyLocally(transcript);
+  // ── Pending reminder follow-up: user was asked "what time?" ──────────────────
+  if (pendingReminderTask) {
+    const task = pendingReminderTask;
+    const t = transcript.trim();
+
+    // First check if the user rephrased as a full reminder ("remind me at 3pm")
+    // classifyLocally will extract the time correctly in that case
+    let fireAt = null;
+    const reclassified = classifyLocally(t);
+    if (reclassified.intent === 'set_reminder' && reclassified.time) {
+      fireAt = parseReminderTime(reclassified.time, reclassified.relative);
+    }
+    // Otherwise treat the whole utterance as a time string (natural speech)
+    if (!fireAt) {
+      const isRelativeAnswer = /\bin\s+\d|\b\d+\s*(min|hour|hr|sec)/i.test(t);
+      fireAt = parseReminderTime(t, isRelativeAnswer);
+    }
+    if (fireAt) {
+      pendingReminderTask = null;
+      const readableTime = new Date(fireAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      chrome.runtime.sendMessage({ type: 'set-reminder', task, fireAt }, (resp) => {
+        if (resp?.ok) {
+          showResponse(`Reminder set for ${readableTime}: "${task}"`);
+          notifications.push({
+            sender: 'Reminder',
+            preview: `${task} — ${readableTime}`,
+            time: 'Pending',
+            urgency: 'medium',
+          });
+          updateNotifBadge();
+          saveNotifications();
+        } else {
+          showResponse(`Failed to set reminder: ${resp?.error || 'unknown error'}`);
+        }
+      });
+      noiseStep = IDLE_NOISE_STEP;
+      displacementMult = IDLE_DISPLACEMENT;
+      vcBars.className = 'idle';
+      await speak(`Got it! I'll remind you at ${readableTime} to ${task}.`);
+      return;
+    } else {
+      // Couldn't parse — keep pendingReminderTask set so user can try again
+      showResponse(`I didn't catch a time from "${transcript}". Say something like "3pm", "at noon", or "in 10 minutes".`);
+      noiseStep = IDLE_NOISE_STEP;
+      displacementMult = IDLE_DISPLACEMENT;
+      vcBars.className = 'idle';
+      await speak(`I didn't catch that. Try saying something like 3 PM, or in 10 minutes.`);
+      return;
+    }
+  }
+
+  let intent = classifyLocally(transcript);
+
+  // Airia fallback for unknown intents
+  if (intent.intent === 'unknown' && appSettings.airiaKey && !airiaCreditsExhausted) {
+    showResponse('Thinking...');
+    const airiaIntent = await classifyViaAiria(transcript);
+    if (airiaIntent && airiaIntent.intent !== 'unknown') {
+      intent = airiaIntent;
+    }
+  }
+
   const action = intent.intent;
   console.log('Orbiv intent:', JSON.stringify(intent));
 
@@ -722,6 +1001,14 @@ async function processTranscript(transcript) {
       }
     });
 
+  } else if (action === 'clear_notifications') {
+    notifications = [];
+    updateNotifBadge();
+    saveNotifications();
+    renderNotifications();
+    showResponse('All notifications cleared.');
+    await speak('All notifications cleared.');
+
   } else if (action === 'read_notifications') {
     openNotifications();
     const count = notifications.length;
@@ -771,9 +1058,20 @@ async function processTranscript(transcript) {
     await speak(msg);
 
   } else if (action === 'help') {
-    const msg = "I can: summarize pages, capture screenshots, manage tabs, track tasks in the planner, tell you the time/date, and more. Just speak or type naturally!";
+    const msg = "I can: summarize pages, capture screenshots, manage tabs, set reminders, record meetings, track tasks in the planner, tell you the time/date, and more. Just speak or type naturally!";
     showResponse(msg);
     await speak(msg);
+
+  } else if (action === 'start_meeting') {
+    startMeeting();
+
+  } else if (action === 'stop_meeting') {
+    if (isMeetingActive) {
+      stopMeeting();
+    } else {
+      showResponse('No meeting is currently recording.');
+      await speak('No meeting is currently recording.');
+    }
 
   } else if (action === 'open_urls') {
     const entries = intent.urls || [];
@@ -804,8 +1102,10 @@ async function processTranscript(transcript) {
   } else if (action === 'set_reminder') {
     const fireAt = parseReminderTime(intent.time, intent.relative);
     if (!fireAt) {
-      showResponse(`Couldn't understand the time "${intent.time}". Try "remind me at 3pm to call John" or "remind me in 5 minutes to check email".`);
-      await speak(`Sorry, I couldn't understand that time.`);
+      pendingReminderTask = intent.task || 'your task';
+      const taskHint = intent.task ? ` to "${intent.task}"` : '';
+      showResponse(`When should I remind you${taskHint}? Say a time like "3pm" or "in 10 minutes".`);
+      await speak(`When should I remind you? Say a time like 3pm or in 10 minutes.`);
     } else {
       const readableTime = new Date(fireAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
       chrome.runtime.sendMessage({ type: 'set-reminder', task: intent.task, fireAt }, (resp) => {
@@ -819,6 +1119,7 @@ async function processTranscript(transcript) {
             urgency: 'medium',
           });
           updateNotifBadge();
+          saveNotifications();
         } else {
           showResponse(`Failed to set reminder: ${resp?.error || 'unknown error'}`);
         }
@@ -827,7 +1128,8 @@ async function processTranscript(transcript) {
     }
 
   } else {
-    showResponse("I'm not sure what you meant. Try saying something like \"summarize this page\" or \"what time is it\".");
+    const hint = appSettings.airiaKey ? 'Try rephrasing, or check your Airia key in Settings.' : 'Add an Airia API key in Settings for smarter recognition.';
+    showResponse(`I'm not sure what you meant. ${hint}`);
     await speak("Hmm, I'm not sure what you meant. Could you try again?");
   }
 }
@@ -838,54 +1140,109 @@ async function processTranscript(transcript) {
 
 /**
  * Parse a spoken time string into a ms timestamp.
- * Absolute: "3pm", "3:30pm", "15:00", "3 pm", "10:23"
- * Relative: "5 minutes", "2 hours", "30 seconds"
+ * Handles natural speech: "at 3pm", "around 3:30", "3 o'clock", "noon",
+ * "in 5 minutes", "three pm", etc.
  */
 function parseReminderTime(timeStr, isRelative) {
   if (!timeStr) return null;
   const s = timeStr.toLowerCase().trim();
 
-  // Relative time: "5 minutes", "2 hours", "30 seconds"
-  if (isRelative) {
-    const rel = s.match(/^(\d+)\s*(min|minute|minutes|hour|hours|hr|hrs|sec|seconds?)$/);
+  // ── Word numbers → digits (Web Speech API sometimes returns words) ───────────
+  const wordNums = { one:1, two:2, three:3, four:4, five:5, six:6, seven:7,
+    eight:8, nine:9, ten:10, eleven:11, twelve:12, thirteen:13, fourteen:14,
+    fifteen:15, sixteen:16, seventeen:17, eighteen:18, nineteen:19, twenty:20,
+    thirty:30, forty:40, fifty:50, sixty:60 };
+  let normalized = s.replace(/\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty)\b/gi,
+    (w) => wordNums[w.toLowerCase()] ?? w);
+
+  // ── Relative time: "5 minutes", "in 5 minutes", "2 hours" ───────────────────
+  if (isRelative || /\bin\s+\d/.test(normalized)) {
+    const rel = normalized.match(/(\d+)\s*(min(?:ute)?s?|hour|hours|hr|hrs|sec(?:ond)?s?)/);
     if (rel) {
       const n = parseInt(rel[1], 10);
       const unit = rel[2];
       let ms;
       if (unit.startsWith('sec')) ms = n * 1000;
       else if (unit.startsWith('h')) ms = n * 60 * 60 * 1000;
-      else ms = n * 60 * 1000; // minutes
+      else ms = n * 60 * 1000;
       return Date.now() + ms;
     }
-    return null;
+    if (isRelative) return null;
   }
 
-  // Absolute time
-  const m = s.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/);
+  // ── "noon" / "midday" ────────────────────────────────────────────────────────
+  if (/\b(noon|midday)\b/.test(normalized)) {
+    const d = new Date(); d.setHours(12, 0, 0, 0);
+    if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
+    return d.getTime();
+  }
+  // ── "midnight" ───────────────────────────────────────────────────────────────
+  if (/\bmidnight\b/.test(normalized)) {
+    const d = new Date(); d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() + 1); // midnight = start of tomorrow
+    return d.getTime();
+  }
+
+  // ── Absolute time — extract from anywhere in the string ─────────────────────
+  // Handles: "3pm", "at 3pm", "around 3:30 pm", "3 o'clock", "15:00"
+  // Strip "o'clock" / "o clock" since it adds no info
+  normalized = normalized.replace(/\bo'?\s*clock\b/g, '').trim();
+  // Strip filler words so "at 3 pm" → "3 pm"
+  normalized = normalized.replace(/\b(at|around|about|by|for|roughly|approximately)\b/g, '').replace(/\s{2,}/g, ' ').trim();
+
+  const m = normalized.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
   if (!m) return null;
 
   let hours = parseInt(m[1], 10);
   const mins = m[2] ? parseInt(m[2], 10) : 0;
   const meridiem = m[3];
 
-  if (meridiem === 'pm' && hours < 12) hours += 12;
-  if (meridiem === 'am' && hours === 12) hours = 0;
+  // Without am/pm: infer from context (hours < 8 → pm for same-day convenience)
+  if (!meridiem) {
+    if (hours >= 1 && hours <= 7) hours += 12; // "3" → 3pm, "7" → 7pm
+    // hours 8–12 or 13–23 stay as-is
+  } else {
+    if (meridiem === 'pm' && hours < 12) hours += 12;
+    if (meridiem === 'am' && hours === 12) hours = 0;
+  }
+
+  if (hours > 23 || mins > 59) return null;
 
   const d = new Date();
   d.setHours(hours, mins, 0, 0);
-  // If the time has already passed today, schedule for tomorrow
   if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
   return d.getTime();
 }
 
-// Listen for reminder notifications from background
+// Listen for notifications from background
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === 'reminder-fired') {
+    notifications.push({
+      sender: 'Reminder',
+      preview: message.task,
+      time: new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
+      urgency: 'high',
+    });
+    updateNotifBadge();
+    saveNotifications();
     enterAlertState();
     showResponse(`Reminder: ${message.task}`);
     speak(`Hey! Reminder: ${message.task}`).then(() => {
       setTimeout(clearAlertState, 2000);
     });
+  }
+
+  if (message.type === 'checkin-fired') {
+    const pending = message.pending || [];
+    if (pending.length === 0) return;
+    const taskNames = pending.slice(0, 3).map(t => t.title).join(', ');
+    const msg = `Check-in: you have ${pending.length} pending task${pending.length > 1 ? 's' : ''}: ${taskNames}.`;
+    notifications.push({ sender: 'Task Check-in', preview: msg, time: new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), urgency: 'medium' });
+    updateNotifBadge();
+    saveNotifications();
+    enterAlertState();
+    showResponse(msg);
+    speak(msg).then(() => setTimeout(clearAlertState, 2000));
   }
 });
 
@@ -1011,12 +1368,29 @@ document.getElementById('planner-back').addEventListener('click', () => {
 });
 
 loadTasks();
+loadNotifications();
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // NOTIFICATIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 let notifications = [];
+
+async function saveNotifications() {
+  const today = new Date().toISOString().slice(0, 10);
+  await chrome.storage.local.set({ 'orbiv-notifications': { date: today, items: notifications } });
+}
+
+async function loadNotifications() {
+  const today = new Date().toISOString().slice(0, 10);
+  const data = await chrome.storage.local.get('orbiv-notifications');
+  const saved = data['orbiv-notifications'];
+  if (saved?.date === today) {
+    notifications = saved.items || [];
+    updateNotifBadge();
+    renderNotifications();
+  }
+}
 
 function openNotifications() {
   notifsPanel.hidden = false;
@@ -1030,7 +1404,7 @@ function renderNotifications() {
     return;
   }
   notifsEmpty.hidden = true;
-  notifications.forEach(n => {
+  notifications.forEach((n, idx) => {
     const card = document.createElement('div');
     card.className = `notif-card urgency-${n.urgency || 'low'}`;
 
@@ -1046,9 +1420,22 @@ function renderNotifications() {
     time.className = 'notif-time';
     time.textContent = n.time || '';
 
+    const del = document.createElement('button');
+    del.className = 'notif-delete';
+    del.textContent = '×';
+    del.title = 'Dismiss';
+    del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      notifications.splice(idx, 1);
+      updateNotifBadge();
+      saveNotifications();
+      renderNotifications();
+    });
+
     card.appendChild(sender);
     card.appendChild(preview);
     card.appendChild(time);
+    card.appendChild(del);
     notifsList.appendChild(card);
   });
 }
@@ -1062,6 +1449,13 @@ function updateNotifBadge() {
 
 document.getElementById('notifs-back').addEventListener('click', () => {
   notifsPanel.hidden = true;
+});
+
+document.getElementById('notifs-clear').addEventListener('click', () => {
+  notifications = [];
+  updateNotifBadge();
+  saveNotifications();
+  renderNotifications();
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1116,13 +1510,16 @@ document.addEventListener('keydown', (e) => {
 // Header buttons
 document.getElementById('btn-planner').addEventListener('click', openPlanner);
 document.getElementById('btn-notifs').addEventListener('click', openNotifications);
-document.getElementById('btn-settings').addEventListener('click', () => {
-  settingsPanel.hidden = false;
-});
-document.getElementById('settings-back').addEventListener('click', () => {
-  settingsPanel.hidden = true;
-});
+document.getElementById('btn-meeting').addEventListener('click', () => { meetingPanel.hidden = false; });
+document.getElementById('btn-settings').addEventListener('click', () => { settingsPanel.hidden = false; });
+document.getElementById('settings-back').addEventListener('click', () => { settingsPanel.hidden = true; });
 document.getElementById('settings-save').addEventListener('click', saveSettings);
+
+// Meeting panel buttons
+document.getElementById('meeting-back').addEventListener('click', () => { meetingPanel.hidden = true; });
+document.getElementById('meeting-start-btn').addEventListener('click', startMeeting);
+document.getElementById('meeting-stop-btn').addEventListener('click', stopMeeting);
+document.getElementById('meeting-export-btn').addEventListener('click', exportMeetingNotes);
 
 // Welcome state
 vcLabel.textContent = 'Click the orb or press Space';
