@@ -496,11 +496,16 @@ function initRecognition() {
   rec.onresult = (event) => {
     let interim = '';
     _finalTranscript = '';
+    // Track only newly-finalized text (event.resultIndex marks where new results start).
+    // In continuous meeting mode event.results grows indefinitely, so we must NOT
+    // re-accumulate from index 0 or every chunk would contain all previous speech.
+    let newFinalText = '';
 
     for (let i = 0; i < event.results.length; i++) {
       const result = event.results[i];
       if (result.isFinal) {
         _finalTranscript += result[0].transcript;
+        if (i >= event.resultIndex) newFinalText += result[0].transcript;
       } else {
         interim += result[0].transcript;
       }
@@ -514,9 +519,10 @@ function initRecognition() {
     }
 
     // When we get a final result, handle based on mode
-    if (_finalTranscript.trim()) {
-      const text = _finalTranscript.trim();
+    if (newFinalText.trim() || (!isMeetingActive && _finalTranscript.trim())) {
+      const text = isMeetingActive ? newFinalText.trim() : _finalTranscript.trim();
       _finalTranscript = '';
+      if (!text) return;
       console.log('Orbiv STT final:', text);
 
       if (isMeetingActive) {
